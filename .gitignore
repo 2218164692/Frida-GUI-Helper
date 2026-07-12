@@ -1,0 +1,44 @@
+# Go
+.gocache/
+.gomodcache/
+.gopath/
+bin/
+build/bin/
+
+# Frontend
+frontend/node_modules/
+frontend/.npm-cache/
+frontend/package.json.md5
+
+# Bundled third-party binaries are release assets, not source files
+tools/platform-tools/*
+!tools/platform-tools/.gitkeep
+tools/frida/*
+!tools/frida/.gitkeep
+tools/frida-server/android-arm64/*
+!tools/frida-server/android-arm64/.gitkeep
+tools/frida-server/android-arm/*
+!tools/frida-server/android-arm/.gitkeep
+tools/frida-server/android-x86/*
+!tools/frida-server/android-x86/.gitkeep
+tools/frida-server/android-x86_64/*
+!tools/frida-server/android-x86_64/.gitkeep
+
+# Local runtime data
+*.log
+tmp/
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+
+# Editors
+.idea/
+.vscode/
+*.swp
