@@ -163,6 +163,10 @@ build/bin/
 - JavaScript API：https://frida.re/docs/javascript-api/
 - Frida Releases：https://github.com/frida/frida/releases
 
+## 友情链接
+
+- LinuxDo： https://linux.do/
+
 ## 许可证
 
 本项目使用 MIT License。详见 [LICENSE](LICENSE)。
