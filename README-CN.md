@@ -3,6 +3,7 @@
 一个面向 Windows 桌面的 Frida Android 辅助工具。项目使用 Wails + Vue 构建，把常见 ADB 和 Frida 操作封装成图形界面，方便用户完成设备扫描、`frida-server` 管理、进程选择、脚本注入、自定义脚本导入和实时日志查看。
 
 > 请仅在你拥有或已获得明确授权的设备和应用上使用本工具。
+> 程序测试设备为MI 6/OnePlus 8T(已root)
 
 ## 功能特性
 
@@ -145,6 +146,15 @@ build/bin/
 - 不要提交私钥、`.env` 文件、证书、Android 签名文件或本地工具缓存。
 - 不要提交个人机器路径、用户名或本地日志。
 - ADB、Frida release、`frida-server` 等第三方二进制文件建议通过 GitHub Release assets 发布，不建议直接提交到源码仓库。
+
+## 界面展示
+<img width="1258" height="805" alt="8c813534eb054a23ab443da7042553f" src="https://github.com/user-attachments/assets/a0cfc4ad-4dec-44fd-8908-04d04d519678" />
+<img width="1250" height="806" alt="bee04719228b2bb46db50054a9b412c" src="https://github.com/user-attachments/assets/62df9a49-58e3-45d0-a050-2e24e714179f" />
+<img width="1247" height="793" alt="69cf35dc37d243ec78038b35aade45c" src="https://github.com/user-attachments/assets/f24c2520-02f9-4675-adcc-9b05b6cfed28" />
+<img width="1249" height="793" alt="f210239719275f842b0b3ca6e7da430" src="https://github.com/user-attachments/assets/4d767e6f-d874-435c-ad79-9272e79b6b36" />
+
+
+
 
 ## 参考资料
 
