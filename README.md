@@ -1,4 +1,5 @@
 # Frida GUI Helper
+English | [中文](README-CN.md)
 
 A Windows desktop helper for using Frida with Android devices. It wraps common ADB and Frida workflows in a Wails + Vue interface, so users can scan devices, manage `frida-server`, browse processes, inject scripts, import custom scripts, and inspect logs without memorizing long command lines.
 
