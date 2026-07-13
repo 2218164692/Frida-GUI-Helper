@@ -575,8 +575,8 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
               <input v-model="fridaLocalPath" type="text" placeholder="留空使用 tools/frida-server 内置文件" />
             </label>
             <label>
-              <span>设备路径</span>
-              <input v-model="fridaRemotePath" type="text" />
+              <span>设备目标（文件或目录）</span>
+              <input v-model="fridaRemotePath" type="text" placeholder="/data/local/tmp/frida-server" />
             </label>
             <label class="check-row">
               <input v-model="forceRestart" type="checkbox" />

@@ -53,10 +53,17 @@ func List() []Template {
 			RequiresDevice: true,
 		},
 		{
+			ID:             "frida-server-path",
+			Name:           "定位 server 文件",
+			Category:       "Frida-server",
+			Description:    "识别设备端实际的 frida-server 文件，兼容目标路径为目录和旧版推送文件名。",
+			RequiresDevice: true,
+		},
+		{
 			ID:             "frida-server-version",
 			Name:           "检查 server 版本",
 			Category:       "Frida-server",
-			Description:    "执行 /data/local/tmp/frida-server --version，确认与 Frida CLI 完全一致。",
+			Description:    "自动定位设备端二进制并执行 --version，确认与 Frida CLI 完全一致。",
 			RequiresDevice: true,
 		},
 		{
@@ -70,7 +77,7 @@ func List() []Template {
 			ID:             "frida-server-start",
 			Name:           "启动 frida-server",
 			Category:       "Frida-server",
-			Description:    "启动 /data/local/tmp/frida-server，优先使用 root 权限。",
+			Description:    "自动解析文件或目录路径，验证二进制后使用 root 权限启动。",
 			RequiresDevice: true,
 		},
 		{

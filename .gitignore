@@ -27,6 +27,7 @@ tools/frida-server/android-x86/*
 !tools/frida-server/android-x86/.gitkeep
 tools/frida-server/android-x86_64/*
 !tools/frida-server/android-x86_64/.gitkeep
+tools/frida-server/frida-server-*
 
 # Local runtime data
 *.log

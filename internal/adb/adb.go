@@ -57,6 +57,11 @@ type FridaServerRequest struct {
 	ForceRestart bool
 }
 
+const (
+	DefaultFridaServerRemotePath = "/data/local/tmp/frida-server"
+	FridaServerLogPath           = "/data/local/tmp/frida-server.log"
+)
+
 type Runner struct {
 	timeout time.Duration
 	log     Logger
@@ -207,43 +212,58 @@ func (r *Runner) StartFridaServer(ctx context.Context, req FridaServerRequest) e
 		return errors.New("device serial is required")
 	}
 
-	remotePath := strings.TrimSpace(req.RemotePath)
-	if remotePath == "" {
-		remotePath = "/data/local/tmp/frida-server"
-	}
-	if !isSafeRemotePath(remotePath) {
-		return fmt.Errorf("remote frida-server path is not safe: %s", remotePath)
+	requestedPath, err := normalizeFridaServerRemotePath(req.RemotePath)
+	if err != nil {
+		return err
 	}
 
-	if !req.ForceRestart {
-		pidOut, _ := r.FridaServerPID(ctx, serial)
-		if pidOut != "" {
+	if pidOut, _ := r.FridaServerPID(ctx, serial); pidOut != "" {
+		if !req.ForceRestart {
 			r.logf("info", "frida-server", "设备上已有 frida-server 进程: %s", pidOut)
 			return nil
 		}
+		if _, err := r.StopFridaServer(ctx, serial); err != nil {
+			return err
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	localPath := strings.TrimSpace(req.LocalPath)
+	remotePath := ""
 	if localPath != "" {
-		if _, err := os.Stat(localPath); err != nil {
+		info, err := os.Stat(localPath)
+		if err != nil {
 			return fmt.Errorf("读取本地 frida-server 失败: %w", err)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("本地 frida-server 路径是目录，请选择具体二进制文件: %s", localPath)
+		}
+
+		remotePath, err = r.resolveFridaServerPushPath(ctx, serial, requestedPath)
+		if err != nil {
+			return err
 		}
 		if _, err := r.run(ctx, "-s", serial, "push", localPath, remotePath); err != nil {
 			return err
 		}
 		r.logf("info", "frida-server", "已推送 frida-server 到 %s", remotePath)
-	} else if _, err := r.Shell(ctx, serial, "ls", remotePath); err != nil {
-		return fmt.Errorf("设备上未找到 %s，请填写本地 frida-server 路径后重试", remotePath)
+	} else {
+		remotePath, err = r.FindFridaServerBinary(ctx, serial, requestedPath)
+		if err != nil {
+			return err
+		}
+		r.logf("info", "frida-server", "使用设备端已有文件: %s", remotePath)
 	}
 
 	if _, err := r.Shell(ctx, serial, "chmod", "755", remotePath); err != nil {
-		return err
+		return fmt.Errorf("设置 frida-server 执行权限失败 (%s): %w", remotePath, err)
 	}
 
-	if req.ForceRestart {
-		_, _ = r.StopFridaServer(ctx, serial)
-		time.Sleep(500 * time.Millisecond)
+	version, err := r.verifyFridaServerBinary(ctx, serial, remotePath)
+	if err != nil {
+		return err
 	}
+	r.logf("info", "frida-server", "设备端二进制验证通过: %s (%s)", remotePath, version)
 
 	if err := r.StartRemoteFridaServer(ctx, serial, remotePath); err != nil {
 		return err
@@ -259,28 +279,26 @@ func (r *Runner) StartFridaServer(ctx context.Context, req FridaServerRequest) e
 }
 
 func (r *Runner) StartRemoteFridaServer(ctx context.Context, serial string, remotePath string) error {
-	remotePath = strings.TrimSpace(remotePath)
-	if remotePath == "" {
-		remotePath = "/data/local/tmp/frida-server"
-	}
-	if !isSafeRemotePath(remotePath) {
-		return fmt.Errorf("remote frida-server path is not safe: %s", remotePath)
-	}
-
 	if pid, _ := r.FridaServerPID(ctx, serial); pid != "" {
 		r.logf("info", "frida-server", "frida-server 已在运行: %s", pid)
 		return nil
 	}
 
-	if _, err := r.Shell(ctx, serial, "ls", remotePath); err != nil {
-		return fmt.Errorf("设备上未找到 %s，请先推送 frida-server", remotePath)
+	actualPath, err := r.FindFridaServerBinary(ctx, serial, remotePath)
+	if err != nil {
+		return err
 	}
-	if _, err := r.Shell(ctx, serial, "chmod", "755", remotePath); err != nil {
+	if _, err := r.Shell(ctx, serial, "chmod", "755", actualPath); err != nil {
+		return fmt.Errorf("设置 frida-server 执行权限失败 (%s): %w", actualPath, err)
+	}
+	if _, err := r.verifyFridaServerBinary(ctx, serial, actualPath); err != nil {
 		return err
 	}
 
-	logPath := "/data/local/tmp/frida-server.log"
-	startCommand := fmt.Sprintf("rm -f %s; nohup %s --verbose >%s 2>&1 &", logPath, remotePath, logPath)
+	startCommand := fmt.Sprintf(
+		"rm -f %s; nohup %s --verbose >%s 2>&1 &",
+		shellQuote(FridaServerLogPath), shellQuote(actualPath), shellQuote(FridaServerLogPath),
+	)
 	attempts := []struct {
 		label   string
 		command string
@@ -309,10 +327,144 @@ func (r *Runner) StartRemoteFridaServer(ctx context.Context, serial string, remo
 func (r *Runner) FridaServerPID(ctx context.Context, serial string) (string, error) {
 	out, err := r.ShellQuiet(ctx, serial, "pidof", "frida-server")
 	out = strings.TrimSpace(out)
-	if out == "" && err != nil {
+	if out != "" {
+		return out, nil
+	}
+
+	psOut, psErr := r.ShellCommandQuiet(ctx, serial, "ps -A | grep '[f]rida-server'")
+	pids := parseFridaServerPIDs(psOut)
+	if len(pids) > 0 {
+		return strings.Join(pids, " "), nil
+	}
+	if err == nil {
 		return "", nil
 	}
-	return out, err
+	if psErr == nil {
+		return "", nil
+	}
+	return "", nil
+}
+
+func (r *Runner) FindFridaServerBinary(ctx context.Context, serial string, preferredPath string) (string, error) {
+	preferredPath, err := normalizeFridaServerRemotePath(preferredPath)
+	if err != nil {
+		return "", err
+	}
+
+	candidates := uniqueStrings([]string{
+		preferredPath,
+		DefaultFridaServerRemotePath,
+		DefaultFridaServerRemotePath + "/frida-server",
+	})
+	for _, candidate := range candidates {
+		path, found := r.discoverFridaServerAtPath(ctx, serial, candidate)
+		if found {
+			return path, nil
+		}
+	}
+
+	return "", fmt.Errorf(
+		"设备端未找到可执行的 frida-server。已检查: %s。请重新选择本地二进制并推送",
+		strings.Join(candidates, ", "),
+	)
+}
+
+func (r *Runner) FridaServerVersion(ctx context.Context, serial string, preferredPath string) (string, string, error) {
+	remotePath, err := r.FindFridaServerBinary(ctx, serial, preferredPath)
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := r.Shell(ctx, serial, "chmod", "755", remotePath); err != nil {
+		return remotePath, "", fmt.Errorf("已定位 frida-server，但设置执行权限失败 (%s): %w", remotePath, err)
+	}
+	version, err := r.verifyFridaServerBinary(ctx, serial, remotePath)
+	if err != nil {
+		return remotePath, "", err
+	}
+	return remotePath, version, nil
+}
+
+func (r *Runner) resolveFridaServerPushPath(ctx context.Context, serial string, requestedPath string) (string, error) {
+	kind, err := r.remotePathKind(ctx, serial, requestedPath)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := fridaServerPushPathForKind(requestedPath, kind)
+	if err != nil {
+		return "", err
+	}
+	if kind == "directory" {
+		r.logf("warn", "frida-server", "%s 是目录，推送目标已自动调整为 %s", requestedPath, resolved)
+	}
+	return resolved, nil
+}
+
+func fridaServerPushPathForKind(requestedPath string, kind string) (string, error) {
+	switch kind {
+	case "directory":
+		return strings.TrimRight(requestedPath, "/") + "/frida-server", nil
+	case "file", "missing":
+		return requestedPath, nil
+	default:
+		return "", fmt.Errorf("设备路径 %s 已存在，但既不是普通文件也不是目录", requestedPath)
+	}
+}
+
+func (r *Runner) remotePathKind(ctx context.Context, serial string, remotePath string) (string, error) {
+	quoted := shellQuote(remotePath)
+	command := fmt.Sprintf(
+		"if [ -d %s ]; then printf directory; elif [ -f %s ]; then printf file; elif [ -e %s ]; then printf other; else printf missing; fi",
+		quoted, quoted, quoted,
+	)
+	out, err := r.ShellCommandQuiet(ctx, serial, command)
+	if err != nil {
+		return "", fmt.Errorf("检查设备路径失败 (%s): %w", remotePath, err)
+	}
+	kind := strings.TrimSpace(out)
+	if kind == "" {
+		return "", fmt.Errorf("检查设备路径失败 (%s): 未返回文件类型", remotePath)
+	}
+	return kind, nil
+}
+
+func (r *Runner) discoverFridaServerAtPath(ctx context.Context, serial string, remotePath string) (string, bool) {
+	if !isSafeRemotePath(remotePath) {
+		return "", false
+	}
+	dir := strings.TrimRight(remotePath, "/")
+	quoted := shellQuote(dir)
+	exactServer := shellQuote(dir + "/frida-server")
+	exactBin := shellQuote(dir + "/frida-server-bin")
+	glob := quoted + "/frida-server-*"
+	command := fmt.Sprintf(
+		"if [ -f %s ]; then printf '%%s\\n' %s; exit 0; fi; "+
+			"if [ -d %s ]; then for f in %s %s %s; do if [ -f \"$f\" ]; then printf '%%s\\n' \"$f\"; exit 0; fi; done; fi; exit 1",
+		quoted, quoted, quoted, exactServer, exactBin, glob,
+	)
+	out, err := r.ShellCommandQuiet(ctx, serial, command)
+	if err != nil {
+		return "", false
+	}
+	found := firstNonEmptyLine(out)
+	if !isSafeRemotePath(found) {
+		return "", false
+	}
+	return found, true
+}
+
+func (r *Runner) verifyFridaServerBinary(ctx context.Context, serial string, remotePath string) (string, error) {
+	out, err := r.ShellQuiet(ctx, serial, remotePath, "--version")
+	if err != nil {
+		return "", fmt.Errorf(
+			"frida-server 二进制验证失败 (%s): %w。请确认文件不是目录、与设备架构匹配且已完整推送",
+			remotePath, err,
+		)
+	}
+	version := firstNonEmptyLine(out)
+	if version == "" {
+		return "", fmt.Errorf("frida-server 二进制验证失败 (%s): --version 未返回版本号", remotePath)
+	}
+	return version, nil
 }
 
 func (r *Runner) StopFridaServer(ctx context.Context, serial string) (string, error) {
@@ -539,6 +691,58 @@ func firstNonEmptyLine(text string) string {
 
 func normalizeNewlines(text string) string {
 	return strings.ReplaceAll(text, "\r\n", "\n")
+}
+
+func normalizeFridaServerRemotePath(remotePath string) (string, error) {
+	remotePath = strings.TrimSpace(remotePath)
+	if remotePath == "" {
+		remotePath = DefaultFridaServerRemotePath
+	}
+	if remotePath != "/" {
+		remotePath = strings.TrimRight(remotePath, "/")
+	}
+	if !isSafeRemotePath(remotePath) || remotePath == "/" {
+		return "", fmt.Errorf("设备端 frida-server 路径不安全: %s", remotePath)
+	}
+	return remotePath, nil
+}
+
+func parseFridaServerPIDs(out string) []string {
+	pids := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, line := range strings.Split(normalizeNewlines(out), "\n") {
+		if !strings.Contains(strings.ToLower(line), "frida-server") {
+			continue
+		}
+		for _, field := range strings.Fields(line) {
+			if _, err := strconv.Atoi(field); err != nil {
+				continue
+			}
+			if _, exists := seen[field]; !exists {
+				seen[field] = struct{}{}
+				pids = append(pids, field)
+			}
+			break
+		}
+	}
+	return pids
+}
+
+func uniqueStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{})
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func isSafeRemotePath(path string) bool {

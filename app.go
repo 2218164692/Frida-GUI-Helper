@@ -284,9 +284,20 @@ func (a *App) RunOperation(req RunOperationRequest) error {
 		}
 		a.logCommandResult("frida-server", "Process", out, err)
 		return err
+	case "frida-server-path":
+		remotePath, err := a.adb.FindFridaServerBinary(ctx, serial, "")
+		a.logCommandResult("frida-server", "Resolved path", remotePath, err)
+		return err
 	case "frida-server-version":
-		out, err := a.adb.ShellCommandQuiet(ctx, serial, "/data/local/tmp/frida-server --version")
-		a.logCommandResult("frida-server", "Version", out, err)
+		remotePath, version, err := a.adb.FridaServerVersion(ctx, serial, "")
+		out := ""
+		if remotePath != "" {
+			out = "Path: " + remotePath
+		}
+		if version != "" {
+			out += "\nVersion: " + version
+		}
+		a.logCommandResult("frida-server", "Binary", out, err)
 		return err
 	case "frida-compat-report":
 		return a.fridaCompatibilityReport(ctx, serial)
@@ -295,7 +306,7 @@ func (a *App) RunOperation(req RunOperationRequest) error {
 		err := a.adb.StartFridaServer(ctx, adb.FridaServerRequest{
 			DeviceSerial: serial,
 			LocalPath:    localPath,
-			RemotePath:   "/data/local/tmp/frida-server",
+			RemotePath:   adb.DefaultFridaServerRemotePath,
 			ForceRestart: false,
 		})
 		if err != nil {
@@ -316,7 +327,7 @@ func (a *App) RunOperation(req RunOperationRequest) error {
 		a.logCommandResult("frida-server", "Stop", out, err)
 		return err
 	case "frida-server-log":
-		out, err := a.adb.ShellCommandQuiet(ctx, serial, "tail -n 200 /data/local/tmp/frida-server.log")
+		out, err := a.adb.ShellQuiet(ctx, serial, "tail", "-n", "200", adb.FridaServerLogPath)
 		if strings.TrimSpace(out) == "" {
 			out = "没有读取到 server 日志。请停止后重新点击“启动 frida-server”，新版会写入 /data/local/tmp/frida-server.log。"
 		}
@@ -473,7 +484,6 @@ func (a *App) fridaCompatibilityReport(ctx context.Context, serial string) error
 		{"Android SDK", "getprop ro.build.version.sdk"},
 		{"ABI", "getprop ro.product.cpu.abilist"},
 		{"SELinux", "getenforce"},
-		{"server version", "/data/local/tmp/frida-server --version"},
 		{"server process", "ps -A | grep frida-server"},
 	}
 
@@ -485,6 +495,16 @@ func (a *App) fridaCompatibilityReport(ctx context.Context, serial string) error
 		}
 		a.logCommandResult("diagnostic", check.title, out, err)
 	}
+
+	serverPath, serverVersion, serverErr := a.adb.FridaServerVersion(ctx, serial, "")
+	serverInfo := ""
+	if serverPath != "" {
+		serverInfo = "Path: " + serverPath
+	}
+	if serverVersion != "" {
+		serverInfo += "\nVersion: " + serverVersion
+	}
+	a.logCommandResult("diagnostic", "server binary", serverInfo, serverErr)
 
 	err := a.runCLI(ctx, "frida-ps", "-U")
 	if err != nil {

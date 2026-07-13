@@ -43,3 +43,52 @@ func TestListPackagesParsesPathContainingEquals(t *testing.T) {
 		t.Fatalf("unexpected package: %s", pkg)
 	}
 }
+
+func TestNormalizeFridaServerRemotePath(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", DefaultFridaServerRemotePath},
+		{" /data/local/tmp/frida-server/ ", DefaultFridaServerRemotePath},
+		{"/data/local/tmp/frida-server/frida-server", "/data/local/tmp/frida-server/frida-server"},
+	}
+	for _, test := range tests {
+		got, err := normalizeFridaServerRemotePath(test.input)
+		if err != nil {
+			t.Fatalf("normalize %q: %v", test.input, err)
+		}
+		if got != test.want {
+			t.Fatalf("normalize %q: got %q want %q", test.input, got, test.want)
+		}
+	}
+
+	if _, err := normalizeFridaServerRemotePath("/data/local/tmp/frida server"); err == nil {
+		t.Fatal("expected unsafe path error")
+	}
+}
+
+func TestParseFridaServerPIDs(t *testing.T) {
+	out := "root 10858 1 2249900 61968 0 S frida-server\n" +
+		"root 13689 1 2249900 61968 0 S frida-server-16.5.5-android-arm64\n"
+	got := parseFridaServerPIDs(out)
+	if strings.Join(got, " ") != "10858 13689" {
+		t.Fatalf("unexpected PIDs: %#v", got)
+	}
+}
+
+func TestFridaServerPushPathForDirectory(t *testing.T) {
+	got, err := fridaServerPushPathForKind(DefaultFridaServerRemotePath, "directory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/data/local/tmp/frida-server/frida-server"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+
+	got, err = fridaServerPushPathForKind(DefaultFridaServerRemotePath, "file")
+	if err != nil || got != DefaultFridaServerRemotePath {
+		t.Fatalf("file path: got %q err=%v", got, err)
+	}
+}
