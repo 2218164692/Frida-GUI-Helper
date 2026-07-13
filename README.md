@@ -152,6 +152,7 @@ If `frida-ps -U` fails, script injection will also fail. Upgrade the desktop Fri
 - JavaScript API: https://frida.re/docs/javascript-api/
 - Frida releases: https://github.com/frida/frida/releases
 - LinuxDo：https://linux.do
+- 52pj：https://www.52pojie.cn/
 
 ## License
 
