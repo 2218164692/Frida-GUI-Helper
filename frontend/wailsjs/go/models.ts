@@ -83,6 +83,119 @@ export namespace adb {
 
 }
 
+export namespace codeshare {
+	
+	export class Project {
+	    ref: string;
+	    id: string;
+	    name: string;
+	    description: string;
+	    owner: string;
+	    slug: string;
+	    fridaVersion: string;
+	    likes: number;
+	    source: string;
+	    fingerprint: string;
+	    trustState: string;
+	    url: string;
+	    origin: string;
+	    cachedAt: string;
+	    warning: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Project(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ref = source["ref"];
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.owner = source["owner"];
+	        this.slug = source["slug"];
+	        this.fridaVersion = source["fridaVersion"];
+	        this.likes = source["likes"];
+	        this.source = source["source"];
+	        this.fingerprint = source["fingerprint"];
+	        this.trustState = source["trustState"];
+	        this.url = source["url"];
+	        this.origin = source["origin"];
+	        this.cachedAt = source["cachedAt"];
+	        this.warning = source["warning"];
+	    }
+	}
+	export class ProjectSummary {
+	    ref: string;
+	    name: string;
+	    description: string;
+	    owner: string;
+	    slug: string;
+	    likes: number;
+	    views: string;
+	    url: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProjectSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ref = source["ref"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.owner = source["owner"];
+	        this.slug = source["slug"];
+	        this.likes = source["likes"];
+	        this.views = source["views"];
+	        this.url = source["url"];
+	    }
+	}
+	export class SearchResult {
+	    items: ProjectSummary[];
+	    query: string;
+	    page: number;
+	    totalPages: number;
+	    source: string;
+	    cachedAt: string;
+	    warning: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SearchResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.items = this.convertValues(source["items"], ProjectSummary);
+	        this.query = source["query"];
+	        this.page = source["page"];
+	        this.totalPages = source["totalPages"];
+	        this.source = source["source"];
+	        this.cachedAt = source["cachedAt"];
+	        this.warning = source["warning"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace frida {
 	
 	export class SessionInfo {

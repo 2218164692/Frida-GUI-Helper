@@ -51,6 +51,45 @@ export interface ImportedScript {
   source: string;
 }
 
+export interface CodeShareProjectSummary {
+  ref: string;
+  name: string;
+  description: string;
+  owner: string;
+  slug: string;
+  likes: number;
+  views: string;
+  url: string;
+}
+
+export interface CodeShareSearchResult {
+  items: CodeShareProjectSummary[];
+  query: string;
+  page: number;
+  totalPages: number;
+  source: "online" | "cache";
+  cachedAt: string;
+  warning: string;
+}
+
+export interface CodeShareProject {
+  ref: string;
+  id: string;
+  name: string;
+  description: string;
+  owner: string;
+  slug: string;
+  fridaVersion: string;
+  likes: number;
+  source: string;
+  fingerprint: string;
+  trustState: "new" | "trusted" | "changed";
+  url: string;
+  origin: "online" | "cache";
+  cachedAt: string;
+  warning: string;
+}
+
 export interface OperationTemplate {
   id: string;
   name: string;
@@ -152,6 +191,25 @@ const mockBackend: BackendApp = {
   async ImportScriptFile() {
     return { name: "", path: "", source: "" } satisfies ImportedScript;
   },
+  async SearchCodeShare(...args: unknown[]) {
+    const query = typeof args[0] === "string" ? args[0] : "";
+    const page = typeof args[1] === "number" ? args[1] : 1;
+    return {
+      items: [],
+      query,
+      page,
+      totalPages: 1,
+      source: "online",
+      cachedAt: "",
+      warning: "Wails 后端未连接，无法访问 CodeShare"
+    } satisfies CodeShareSearchResult;
+  },
+  async GetCodeShareProject() {
+    throw new Error("Wails 后端未连接，无法加载 CodeShare 项目");
+  },
+  async TrustCodeShareProject() {
+    return undefined;
+  },
   async ListOperations() {
     return [] satisfies OperationTemplate[];
   },
@@ -209,6 +267,12 @@ export const api = {
   startFridaServer: (request: FridaServerRequest) => invoke<void>("StartFridaServer", request),
   listScripts: () => invokeArray<ScriptTemplate>("ListScripts"),
   importScriptFile: () => invoke<ImportedScript>("ImportScriptFile"),
+  searchCodeShare: (query: string, page: number) =>
+    invoke<CodeShareSearchResult>("SearchCodeShare", query, page),
+  getCodeShareProject: (projectRef: string) =>
+    invoke<CodeShareProject>("GetCodeShareProject", projectRef),
+  trustCodeShareProject: (projectRef: string, fingerprint: string) =>
+    invoke<void>("TrustCodeShareProject", projectRef, fingerprint),
   listOperations: () => invokeArray<OperationTemplate>("ListOperations"),
   runOperation: (request: RunOperationRequest) => invoke<void>("RunOperation", request),
   runScript: (request: RunScriptRequest) => invoke<SessionInfo>("RunScript", request),

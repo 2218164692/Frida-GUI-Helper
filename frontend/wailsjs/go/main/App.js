@@ -6,6 +6,10 @@ export function ClearLogs() {
   return window['go']['main']['App']['ClearLogs']();
 }
 
+export function GetCodeShareProject(arg1) {
+  return window['go']['main']['App']['GetCodeShareProject'](arg1);
+}
+
 export function GetLogs() {
   return window['go']['main']['App']['GetLogs']();
 }
@@ -50,10 +54,18 @@ export function RunScript(arg1) {
   return window['go']['main']['App']['RunScript'](arg1);
 }
 
+export function SearchCodeShare(arg1, arg2) {
+  return window['go']['main']['App']['SearchCodeShare'](arg1, arg2);
+}
+
 export function StartFridaServer(arg1) {
   return window['go']['main']['App']['StartFridaServer'](arg1);
 }
 
 export function StopSession(arg1) {
   return window['go']['main']['App']['StopSession'](arg1);
+}
+
+export function TrustCodeShareProject(arg1, arg2) {
+  return window['go']['main']['App']['TrustCodeShareProject'](arg1, arg2);
 }

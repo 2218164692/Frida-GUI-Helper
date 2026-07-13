@@ -5,6 +5,10 @@
 bin/
 build/bin/
 
+# GitHub Release artifacts are uploaded separately
+release/
+*.zip
+
 # Frontend
 frontend/node_modules/
 frontend/.npm-cache/

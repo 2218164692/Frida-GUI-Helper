@@ -2,8 +2,12 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
   AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
   CheckCircle2,
+  Cloud,
   Cpu,
+  Database,
   Download,
   FileCode2,
   ListTree,
@@ -27,6 +31,9 @@ import {
   subscribeLogs,
   type AndroidApp,
   type AndroidProcess,
+  type CodeShareProject,
+  type CodeShareProjectSummary,
+  type CodeShareSearchResult,
   type Device,
   type LogEntry,
   type OperationTemplate,
@@ -40,6 +47,7 @@ type ViewKey = "devices" | "processes" | "scripts" | "logs";
 type RunMode = "attach" | "spawn";
 type TargetKind = "pid" | "name" | "package";
 type LevelFilter = "all" | "info" | "warn" | "error";
+type ScriptHubTab = "local" | "codeshare";
 
 const views: Array<{ key: ViewKey; label: string; icon: unknown }> = [
   { key: "devices", label: "设备", icon: MonitorSmartphone },
@@ -64,8 +72,12 @@ const processTab = ref<"processes" | "apps">("processes");
 
 const scripts = ref<ScriptTemplate[]>([]);
 const operations = ref<OperationTemplate[]>([]);
+const scriptHubTab = ref<ScriptHubTab>("local");
 const selectedScriptID = ref("");
 const editorSource = ref("");
+const codeShareQuery = ref("");
+const codeShareResult = ref<CodeShareSearchResult | null>(null);
+const activeCodeShareProject = ref<CodeShareProject | null>(null);
 const runMode = ref<RunMode>("attach");
 const targetKind = ref<TargetKind>("name");
 const target = ref("");
@@ -94,6 +106,9 @@ const selectedDeviceLabel = computed(() => {
 const activeScript = computed(() => scripts.value.find((script) => script.id === selectedScriptID.value));
 const activeScriptName = computed(() => activeScript.value?.name || "自定义脚本");
 const canRunScript = computed(() => Boolean(selectedSerial.value && target.value.trim() && editorSource.value.trim()));
+const localScripts = computed(() => scripts.value.filter((script) => !script.id.startsWith("codeshare:")));
+const codeShareItems = computed(() => codeShareResult.value?.items ?? []);
+const codeShareSourceLabel = computed(() => codeShareResult.value?.source === "cache" ? "本地缓存" : "在线");
 
 const filteredProcesses = computed(() => {
   const query = processQuery.value.trim().toLowerCase();
@@ -193,7 +208,10 @@ async function refreshApps() {
 
 async function refreshScripts() {
   await withBusy("scripts", async () => {
-    scripts.value = await api.listScripts();
+	const externalScripts = scripts.value.filter((script) =>
+		script.id.startsWith("imported:") || script.id.startsWith("codeshare:")
+	);
+	scripts.value = [...externalScripts, ...(await api.listScripts())];
     if (!selectedScriptID.value && scripts.value.length > 0) {
       selectScript(scripts.value[0]);
     }
@@ -214,6 +232,7 @@ async function importScriptFile() {
       source: imported.source
     };
     scripts.value = [script, ...scripts.value.filter((item) => item.id !== script.id)];
+    scriptHubTab.value = "local";
     selectScript(script);
     appendLocalLog("info", "ui", `已导入脚本: ${script.name}`);
   });
@@ -238,7 +257,100 @@ async function refreshSessions() {
 function selectScript(script: ScriptTemplate) {
   selectedScriptID.value = script.id;
   editorSource.value = script.source;
+  if (script.id.startsWith("codeshare:")) {
+    scriptHubTab.value = "codeshare";
+  } else {
+    scriptHubTab.value = "local";
+    activeCodeShareProject.value = null;
+  }
   activeView.value = "scripts";
+}
+
+async function openCodeShare() {
+  scriptHubTab.value = "codeshare";
+  if (!codeShareResult.value) {
+    await searchCodeShare(1);
+  }
+}
+
+async function searchCodeShare(page = 1) {
+  await withBusy("codeshare-search", async () => {
+    const result = await api.searchCodeShare(codeShareQuery.value.trim(), page);
+    result.items = Array.isArray(result.items) ? result.items : [];
+    result.page = Math.max(1, result.page || page);
+    result.totalPages = Math.max(1, result.totalPages || 1);
+    codeShareResult.value = result;
+    if (result.warning) {
+      appendLocalLog("warn", "codeshare", result.warning);
+    }
+  });
+}
+
+async function loadCodeShareProject(summary: CodeShareProjectSummary) {
+  await withBusy(`codeshare-project:${summary.ref}`, async () => {
+    const project = await api.getCodeShareProject(summary.ref);
+    if (project.warning) {
+      appendLocalLog("warn", "codeshare", project.warning);
+    }
+
+    if (project.trustState !== "trusted") {
+      const changed = project.trustState === "changed";
+      const origin = project.origin === "cache"
+        ? `当前源码来自 ${formatDateTime(project.cachedAt)} 的本地缓存。`
+        : "当前源码来自 Frida CodeShare 在线服务。";
+      const message = [
+        changed ? "该项目的源码已发生变化，需要重新确认。" : "这是首次载入该 CodeShare 项目。",
+        `项目：${project.name}`,
+        `作者：@${project.owner}`,
+        `SHA-256：${project.fingerprint}`,
+        origin,
+        "CodeShare 是社区脚本库。确认信任前请检查源码，仅在已授权目标上运行。",
+        "",
+        "是否信任当前指纹并载入编辑器？"
+      ].join("\n");
+      if (!window.confirm(message)) {
+        appendLocalLog("warn", "codeshare", `已取消信任 @${project.ref}`);
+        return;
+      }
+      await api.trustCodeShareProject(project.ref, project.fingerprint);
+      project.trustState = "trusted";
+    }
+
+    const script: ScriptTemplate = {
+      id: `codeshare:${project.ref}:${project.fingerprint}`,
+      name: project.name,
+      category: "CodeShare",
+      description: `@${project.owner} · ${project.description || "Frida CodeShare community script"}`,
+      source: project.source
+    };
+    scripts.value = [script, ...scripts.value.filter((item) => !item.id.startsWith(`codeshare:${project.ref}:`))];
+    activeCodeShareProject.value = project;
+    selectScript(script);
+    appendLocalLog("info", "codeshare", `已载入 @${project.ref}，SHA-256: ${project.fingerprint}`);
+  });
+}
+
+function previousCodeSharePage() {
+  const page = codeShareResult.value?.page ?? 1;
+  if (page > 1) {
+    void searchCodeShare(page - 1);
+  }
+}
+
+function nextCodeSharePage() {
+  const page = codeShareResult.value?.page ?? 1;
+  const totalPages = codeShareResult.value?.totalPages ?? 1;
+  if (page < totalPages) {
+    void searchCodeShare(page + 1);
+  }
+}
+
+function formatDateTime(value: string) {
+  if (!value) {
+    return "未知时间";
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
 }
 
 async function startFridaServer() {
@@ -648,51 +760,119 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
           <div class="panel-header">
             <div>
               <h2>Script Hub</h2>
-              <p>{{ scripts.length }} 个内置模板</p>
+              <p v-if="scriptHubTab === 'local'">{{ localScripts.length }} 个本地脚本</p>
+              <p v-else>{{ codeShareItems.length }} 个 CodeShare 项目</p>
             </div>
             <div class="header-controls">
-              <button class="icon-button" type="button" title="导入脚本" @click="importScriptFile">
+              <button v-if="scriptHubTab === 'local'" class="icon-button" type="button" title="导入脚本" @click="importScriptFile">
                 <Upload :size="17" />
               </button>
-              <button class="icon-button" type="button" title="刷新脚本" @click="refreshScripts">
+              <button
+                class="icon-button"
+                type="button"
+                :title="scriptHubTab === 'local' ? '刷新本地脚本' : '刷新 CodeShare'"
+                @click="scriptHubTab === 'local' ? refreshScripts() : searchCodeShare(codeShareResult?.page || 1)"
+              >
                 <RefreshCw :size="17" />
               </button>
             </div>
           </div>
 
-          <button
-            v-for="script in scripts"
-            :key="script.id"
-            class="script-item"
-            :class="{ active: selectedScriptID === script.id }"
-            type="button"
-            @click="selectScript(script)"
-          >
-            <span>{{ script.category }}</span>
-            <strong>{{ script.name }}</strong>
-            <small>{{ script.description }}</small>
-          </button>
-
-          <div class="hub-divider">
-            <Wrench :size="15" />
-            <span>常用操作</span>
+          <div class="hub-tabs segmented wide">
+            <button type="button" :class="{ active: scriptHubTab === 'local' }" @click="scriptHubTab = 'local'">
+              本地
+            </button>
+            <button type="button" :class="{ active: scriptHubTab === 'codeshare' }" @click="openCodeShare">
+              CodeShare
+            </button>
           </div>
 
-          <button
-            v-for="operation in operations"
-            :key="operation.id"
-            class="operation-item"
-            type="button"
-            :disabled="operation.requiresDevice && !selectedSerial"
-            @click="runOperation(operation)"
-          >
-            <span>{{ operation.category }}</span>
-            <strong>{{ operation.name }}</strong>
-            <small>{{ operation.description }}</small>
-          </button>
+          <template v-if="scriptHubTab === 'local'">
+            <button
+              v-for="script in localScripts"
+              :key="script.id"
+              class="script-item"
+              :class="{ active: selectedScriptID === script.id }"
+              type="button"
+              @click="selectScript(script)"
+            >
+              <span>{{ script.category }}</span>
+              <strong>{{ script.name }}</strong>
+              <small>{{ script.description }}</small>
+            </button>
+
+            <div class="hub-divider">
+              <Wrench :size="15" />
+              <span>常用操作</span>
+            </div>
+
+            <button
+              v-for="operation in operations"
+              :key="operation.id"
+              class="operation-item"
+              type="button"
+              :disabled="operation.requiresDevice && !selectedSerial"
+              @click="runOperation(operation)"
+            >
+              <span>{{ operation.category }}</span>
+              <strong>{{ operation.name }}</strong>
+              <small>{{ operation.description }}</small>
+            </button>
+          </template>
+
+          <template v-else>
+            <form class="codeshare-search" @submit.prevent="searchCodeShare(1)">
+              <label class="search-box compact-search">
+                <Search :size="16" />
+                <input v-model="codeShareQuery" type="search" maxlength="120" placeholder="搜索官方社区脚本" />
+              </label>
+              <button class="icon-button strong" type="submit" title="搜索 CodeShare" :disabled="busy === 'codeshare-search'">
+                <Search :size="17" />
+              </button>
+            </form>
+
+            <div v-if="codeShareResult" class="codeshare-source" :class="codeShareResult.source">
+              <Database v-if="codeShareResult.source === 'cache'" :size="14" />
+              <Cloud v-else :size="14" />
+              <span>{{ codeShareSourceLabel }}</span>
+              <small v-if="codeShareResult.cachedAt">{{ formatDateTime(codeShareResult.cachedAt) }}</small>
+            </div>
+
+            <div v-if="codeShareResult?.warning" class="codeshare-warning">
+              <AlertTriangle :size="15" />
+              <span>{{ codeShareResult.warning }}</span>
+            </div>
+
+            <div v-if="busy === 'codeshare-search' && !codeShareResult" class="empty compact-empty">正在连接 CodeShare...</div>
+            <div v-else-if="codeShareResult && codeShareItems.length === 0" class="empty compact-empty">没有匹配的项目</div>
+
+            <button
+              v-for="project in codeShareItems"
+              :key="project.ref"
+              class="script-item codeshare-item"
+              :class="{ active: activeCodeShareProject?.ref === project.ref }"
+              type="button"
+              :disabled="busy === `codeshare-project:${project.ref}`"
+              @click="loadCodeShareProject(project)"
+            >
+              <span>@{{ project.owner }} · {{ project.likes }} 赞 · {{ project.views || '-' }} 浏览</span>
+              <strong>{{ project.name }}</strong>
+              <small>{{ project.description || project.ref }}</small>
+            </button>
+
+            <div v-if="codeShareResult" class="codeshare-pagination">
+              <button class="icon-button" type="button" title="上一页" :disabled="codeShareResult.page <= 1" @click="previousCodeSharePage">
+                <ChevronLeft :size="17" />
+              </button>
+              <span>{{ codeShareResult.page }} / {{ codeShareResult.totalPages }}</span>
+              <button class="icon-button" type="button" title="下一页" :disabled="codeShareResult.page >= codeShareResult.totalPages" @click="nextCodeSharePage">
+                <ChevronRight :size="17" />
+              </button>
+            </div>
+          </template>
         </div>
 
-        <div class="panel editor-panel">
+        <div class="panel editor-panel" :class="{ 'codeshare-active': activeCodeShareProject }">
           <div class="panel-header">
             <div>
               <h2>脚本编辑器</h2>
@@ -702,6 +882,22 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
               <Play :size="17" />
               <span>注入</span>
             </button>
+          </div>
+
+          <div v-if="activeCodeShareProject" class="codeshare-meta">
+            <div>
+              <strong>@{{ activeCodeShareProject.owner }}</strong>
+              <span>{{ activeCodeShareProject.likes }} 赞</span>
+              <span v-if="activeCodeShareProject.fridaVersion">发布时 Frida {{ activeCodeShareProject.fridaVersion }}</span>
+              <span class="source-badge" :class="activeCodeShareProject.origin">
+                {{ activeCodeShareProject.origin === 'cache' ? '缓存源码' : '在线源码' }}
+              </span>
+            </div>
+            <code :title="activeCodeShareProject.fingerprint">SHA-256 {{ activeCodeShareProject.fingerprint }}</code>
+            <p v-if="activeCodeShareProject.warning">
+              <AlertTriangle :size="14" />
+              <span>{{ activeCodeShareProject.warning }}</span>
+            </p>
           </div>
 
           <div class="run-grid">
@@ -1323,6 +1519,84 @@ td.empty {
   overflow-y: auto;
 }
 
+.hub-tabs {
+  flex: 0 0 auto;
+  width: calc(100% - 20px);
+  margin: 10px 10px 0;
+}
+
+.codeshare-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  gap: 8px;
+  margin: 10px 10px 0;
+}
+
+.compact-search {
+  width: 100%;
+}
+
+.codeshare-source {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  margin: 10px 10px 0;
+  padding: 0 9px;
+  color: #14624f;
+  background: #eff9f5;
+  border: 1px solid #c8e8dc;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.codeshare-source.cache {
+  color: #7b4c12;
+  background: #fff8e9;
+  border-color: #efdcae;
+}
+
+.codeshare-source small {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codeshare-warning {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 7px;
+  margin: 8px 10px 0;
+  padding: 8px 9px;
+  color: #8a321f;
+  background: #fff7f3;
+  border: 1px solid #ffd8ca;
+  border-radius: 7px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.codeshare-warning svg {
+  margin-top: 1px;
+}
+
+.codeshare-pagination {
+  display: grid;
+  grid-template-columns: 36px minmax(70px, 1fr) 36px;
+  align-items: center;
+  gap: 8px;
+  margin: 10px;
+}
+
+.codeshare-pagination span {
+  color: #65727e;
+  font-size: 12px;
+  text-align: center;
+}
+
 .script-item,
 .operation-item {
   display: grid;
@@ -1401,6 +1675,67 @@ td.empty {
   display: grid;
   min-height: 0;
   grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.editor-panel.codeshare-active {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+.codeshare-meta {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px 16px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e7ebf0;
+}
+
+.codeshare-meta > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: #5d6a76;
+  font-size: 12px;
+}
+
+.codeshare-meta strong {
+  color: #20252d;
+}
+
+.codeshare-meta code {
+  min-width: 0;
+  overflow: hidden;
+  color: #53606b;
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codeshare-meta p {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  gap: 7px;
+  margin: 0;
+  color: #8a321f;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 7px;
+  color: #14624f;
+  background: #e9f7f1;
+  border-radius: 5px;
+}
+
+.source-badge.cache {
+  color: #7b4c12;
+  background: #fff2d3;
 }
 
 .run-grid {

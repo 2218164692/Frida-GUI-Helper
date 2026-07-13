@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"frida-gui-helper/internal/adb"
+	"frida-gui-helper/internal/codeshare"
 	"frida-gui-helper/internal/frida"
 	"frida-gui-helper/internal/logstream"
 	"frida-gui-helper/internal/operations"
@@ -21,12 +22,13 @@ import (
 )
 
 type App struct {
-	ctx    context.Context
-	logs   *logstream.Stream
-	adb    *adb.Runner
-	frida  *frida.Runner
-	tools  *toolchain.Resolver
-	cancel context.CancelFunc
+	ctx       context.Context
+	logs      *logstream.Stream
+	adb       *adb.Runner
+	frida     *frida.Runner
+	codeShare *codeshare.Client
+	tools     *toolchain.Resolver
+	cancel    context.CancelFunc
 }
 
 type SystemStatus struct {
@@ -78,6 +80,7 @@ func NewApp() *App {
 	app.logs = logstream.New(1000, nil)
 	app.adb = adb.NewRunner(app.addLog, app.tools)
 	app.frida = frida.NewRunner(app.addLog, app.tools)
+	app.codeShare = codeshare.NewClient()
 	return app
 }
 
@@ -155,6 +158,48 @@ func (a *App) StartFridaServer(req FridaServerRequest) error {
 
 func (a *App) ListScripts() []scripts.Template {
 	return scripts.List()
+}
+
+func (a *App) SearchCodeShare(query string, page int) (codeshare.SearchResult, error) {
+	ctx, cancel := a.withTimeout(20 * time.Second)
+	defer cancel()
+
+	result, err := a.codeShare.Search(ctx, query, page)
+	if err != nil {
+		a.addLog("error", "codeshare", err.Error())
+		return codeshare.SearchResult{}, err
+	}
+	if result.Warning != "" {
+		a.addLog("warn", "codeshare", result.Warning)
+	} else {
+		a.addLog("info", "codeshare", fmt.Sprintf("已加载 %d 个项目（第 %d/%d 页，来源: %s）", len(result.Items), result.Page, result.TotalPages, result.Source))
+	}
+	return result, nil
+}
+
+func (a *App) GetCodeShareProject(projectRef string) (codeshare.Project, error) {
+	ctx, cancel := a.withTimeout(20 * time.Second)
+	defer cancel()
+
+	project, err := a.codeShare.GetProject(ctx, projectRef)
+	if err != nil {
+		a.addLog("error", "codeshare", err.Error())
+		return codeshare.Project{}, err
+	}
+	if project.Warning != "" {
+		a.addLog("warn", "codeshare", project.Warning)
+	}
+	a.addLog("info", "codeshare", fmt.Sprintf("已加载 @%s，来源: %s，SHA-256: %s", project.Ref, project.Origin, project.Fingerprint))
+	return project, nil
+}
+
+func (a *App) TrustCodeShareProject(projectRef string, fingerprint string) error {
+	if err := a.codeShare.Trust(projectRef, fingerprint); err != nil {
+		a.addLog("error", "codeshare", err.Error())
+		return err
+	}
+	a.addLog("info", "codeshare", fmt.Sprintf("已信任 @%s，SHA-256: %s", strings.TrimPrefix(strings.TrimSpace(projectRef), "@"), fingerprint))
+	return nil
 }
 
 func (a *App) ListOperations() []operations.Template {
