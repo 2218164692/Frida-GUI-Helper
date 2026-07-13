@@ -166,6 +166,7 @@ build/bin/
 ## 友情链接
 
 - LinuxDo： https://linux.do/
+- 吾爱破解52pj： https://www.52pojie.cn/
 
 ## 许可证
 
