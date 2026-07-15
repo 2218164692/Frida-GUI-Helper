@@ -6,6 +6,10 @@ export function ClearLogs() {
   return window['go']['main']['App']['ClearLogs']();
 }
 
+export function DeleteLocalScript(arg1) {
+  return window['go']['main']['App']['DeleteLocalScript'](arg1);
+}
+
 export function GetCodeShareProject(arg1) {
   return window['go']['main']['App']['GetCodeShareProject'](arg1);
 }
@@ -30,6 +34,10 @@ export function ListDevices() {
   return window['go']['main']['App']['ListDevices']();
 }
 
+export function ListLocalScripts() {
+  return window['go']['main']['App']['ListLocalScripts']();
+}
+
 export function ListOperations() {
   return window['go']['main']['App']['ListOperations']();
 }
@@ -46,12 +54,20 @@ export function ListSessions() {
   return window['go']['main']['App']['ListSessions']();
 }
 
+export function RecordLocalScriptRun(arg1) {
+  return window['go']['main']['App']['RecordLocalScriptRun'](arg1);
+}
+
 export function RunOperation(arg1) {
   return window['go']['main']['App']['RunOperation'](arg1);
 }
 
 export function RunScript(arg1) {
   return window['go']['main']['App']['RunScript'](arg1);
+}
+
+export function SaveLocalScript(arg1) {
+  return window['go']['main']['App']['SaveLocalScript'](arg1);
 }
 
 export function SearchCodeShare(arg1, arg2) {

@@ -16,6 +16,7 @@ import (
 	"frida-gui-helper/internal/logstream"
 	"frida-gui-helper/internal/operations"
 	"frida-gui-helper/internal/scripts"
+	"frida-gui-helper/internal/scriptstore"
 	"frida-gui-helper/internal/toolchain"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -27,6 +28,7 @@ type App struct {
 	adb       *adb.Runner
 	frida     *frida.Runner
 	codeShare *codeshare.Client
+	scripts   *scriptstore.Store
 	tools     *toolchain.Resolver
 	cancel    context.CancelFunc
 }
@@ -74,6 +76,16 @@ type ImportedScript struct {
 	Source string `json:"source"`
 }
 
+type SaveLocalScriptRequest struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Tags        []string `json:"tags"`
+	Favorite    bool     `json:"favorite"`
+	Source      string   `json:"source"`
+	Origin      string   `json:"origin"`
+}
+
 func NewApp() *App {
 	app := &App{}
 	app.tools = toolchain.NewResolver()
@@ -81,6 +93,7 @@ func NewApp() *App {
 	app.adb = adb.NewRunner(app.addLog, app.tools)
 	app.frida = frida.NewRunner(app.addLog, app.tools)
 	app.codeShare = codeshare.NewClient()
+	app.scripts = scriptstore.New()
 	return app
 }
 
@@ -158,6 +171,50 @@ func (a *App) StartFridaServer(req FridaServerRequest) error {
 
 func (a *App) ListScripts() []scripts.Template {
 	return scripts.List()
+}
+
+func (a *App) ListLocalScripts() ([]scriptstore.Script, error) {
+	items, err := a.scripts.List()
+	if err != nil {
+		a.addLog("error", "scripts", err.Error())
+		return nil, err
+	}
+	return items, nil
+}
+
+func (a *App) SaveLocalScript(req SaveLocalScriptRequest) (scriptstore.Script, error) {
+	saved, err := a.scripts.Save(scriptstore.SaveRequest{
+		ID:          req.ID,
+		Name:        req.Name,
+		Description: req.Description,
+		Tags:        req.Tags,
+		Favorite:    req.Favorite,
+		Source:      req.Source,
+		Origin:      req.Origin,
+	})
+	if err != nil {
+		a.addLog("error", "scripts", err.Error())
+		return scriptstore.Script{}, err
+	}
+	a.addLog("info", "scripts", fmt.Sprintf("已保存本地脚本: %s", saved.Name))
+	return saved, nil
+}
+
+func (a *App) DeleteLocalScript(id string) error {
+	if err := a.scripts.Delete(id); err != nil {
+		a.addLog("error", "scripts", err.Error())
+		return err
+	}
+	a.addLog("info", "scripts", "已删除本地脚本")
+	return nil
+}
+
+func (a *App) RecordLocalScriptRun(id string) error {
+	if err := a.scripts.RecordRun(id); err != nil {
+		a.addLog("warn", "scripts", err.Error())
+		return err
+	}
+	return nil
 }
 
 func (a *App) SearchCodeShare(query string, page int) (codeshare.SearchResult, error) {

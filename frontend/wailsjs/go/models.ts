@@ -344,6 +344,30 @@ export namespace main {
 	        this.scriptSource = source["scriptSource"];
 	    }
 	}
+	export class SaveLocalScriptRequest {
+	    id: string;
+	    name: string;
+	    description: string;
+	    tags: string[];
+	    favorite: boolean;
+	    source: string;
+	    origin: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveLocalScriptRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.tags = source["tags"];
+	        this.favorite = source["favorite"];
+	        this.source = source["source"];
+	        this.origin = source["origin"];
+	    }
+	}
 	export class ToolStatus {
 	    name: string;
 	    path: string;
@@ -450,6 +474,41 @@ export namespace scripts {
 	        this.category = source["category"];
 	        this.description = source["description"];
 	        this.source = source["source"];
+	    }
+	}
+
+}
+
+export namespace scriptstore {
+	
+	export class Script {
+	    id: string;
+	    name: string;
+	    description: string;
+	    tags: string[];
+	    favorite: boolean;
+	    source: string;
+	    origin: string;
+	    createdAt: string;
+	    updatedAt: string;
+	    lastUsedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Script(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.tags = source["tags"];
+	        this.favorite = source["favorite"];
+	        this.source = source["source"];
+	        this.origin = source["origin"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	        this.lastUsedAt = source["lastUsedAt"];
 	    }
 	}
 

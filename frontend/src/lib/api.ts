@@ -51,6 +51,29 @@ export interface ImportedScript {
   source: string;
 }
 
+export interface LocalScript {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  favorite: boolean;
+  source: string;
+  origin: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string;
+}
+
+export interface SaveLocalScriptRequest {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  favorite: boolean;
+  source: string;
+  origin: string;
+}
+
 export interface CodeShareProjectSummary {
   ref: string;
   name: string;
@@ -191,6 +214,30 @@ const mockBackend: BackendApp = {
   async ImportScriptFile() {
     return { name: "", path: "", source: "" } satisfies ImportedScript;
   },
+  async ListLocalScripts() {
+    return [] satisfies LocalScript[];
+  },
+  async SaveLocalScript(...args: unknown[]) {
+    const request = args[0] as SaveLocalScriptRequest;
+    return {
+      id: request.id || "preview",
+      name: request.name,
+      description: request.description,
+      tags: request.tags,
+      favorite: request.favorite,
+      source: request.source,
+      origin: request.origin,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastUsedAt: ""
+    } satisfies LocalScript;
+  },
+  async DeleteLocalScript() {
+    return undefined;
+  },
+  async RecordLocalScriptRun() {
+    return undefined;
+  },
   async SearchCodeShare(...args: unknown[]) {
     const query = typeof args[0] === "string" ? args[0] : "";
     const page = typeof args[1] === "number" ? args[1] : 1;
@@ -267,6 +314,10 @@ export const api = {
   startFridaServer: (request: FridaServerRequest) => invoke<void>("StartFridaServer", request),
   listScripts: () => invokeArray<ScriptTemplate>("ListScripts"),
   importScriptFile: () => invoke<ImportedScript>("ImportScriptFile"),
+  listLocalScripts: () => invokeArray<LocalScript>("ListLocalScripts"),
+  saveLocalScript: (request: SaveLocalScriptRequest) => invoke<LocalScript>("SaveLocalScript", request),
+  deleteLocalScript: (id: string) => invoke<void>("DeleteLocalScript", id),
+  recordLocalScriptRun: (id: string) => invoke<void>("RecordLocalScriptRun", id),
   searchCodeShare: (query: string, page: number) =>
     invoke<CodeShareSearchResult>("SearchCodeShare", query, page),
   getCodeShareProject: (projectRef: string) =>

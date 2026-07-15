@@ -4,11 +4,14 @@ import {codeshare} from '../models';
 import {logstream} from '../models';
 import {main} from '../models';
 import {adb} from '../models';
+import {scriptstore} from '../models';
 import {operations} from '../models';
 import {scripts} from '../models';
 import {frida} from '../models';
 
 export function ClearLogs():Promise<void>;
+
+export function DeleteLocalScript(arg1:string):Promise<void>;
 
 export function GetCodeShareProject(arg1:string):Promise<codeshare.Project>;
 
@@ -22,6 +25,8 @@ export function ListApps(arg1:string,arg2:boolean):Promise<Array<adb.AndroidApp>
 
 export function ListDevices():Promise<Array<adb.Device>>;
 
+export function ListLocalScripts():Promise<Array<scriptstore.Script>>;
+
 export function ListOperations():Promise<Array<operations.Template>>;
 
 export function ListProcesses(arg1:string):Promise<Array<adb.Process>>;
@@ -30,9 +35,13 @@ export function ListScripts():Promise<Array<scripts.Template>>;
 
 export function ListSessions():Promise<Array<frida.SessionInfo>>;
 
+export function RecordLocalScriptRun(arg1:string):Promise<void>;
+
 export function RunOperation(arg1:main.RunOperationRequest):Promise<void>;
 
 export function RunScript(arg1:main.RunScriptRequest):Promise<frida.SessionInfo>;
+
+export function SaveLocalScript(arg1:main.SaveLocalScriptRequest):Promise<scriptstore.Script>;
 
 export function SearchCodeShare(arg1:string,arg2:number):Promise<codeshare.SearchResult>;
 

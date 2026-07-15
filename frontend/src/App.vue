@@ -15,17 +15,21 @@ import {
   Play,
   PlugZap,
   RefreshCw,
+  Save,
   Search,
   Send,
   Server,
   ShieldCheck,
   Square,
+  Star,
+  StarOff,
   Terminal,
   Trash2,
   Upload,
   Wrench,
   Usb
 } from "@lucide/vue";
+import ScriptEditor from "./components/ScriptEditor.vue";
 import {
   api,
   subscribeLogs,
@@ -35,8 +39,10 @@ import {
   type CodeShareProjectSummary,
   type CodeShareSearchResult,
   type Device,
+  type LocalScript,
   type LogEntry,
   type OperationTemplate,
+  type SaveLocalScriptRequest,
   type ScriptTemplate,
   type SessionInfo,
   type SystemStatus,
@@ -48,6 +54,18 @@ type RunMode = "attach" | "spawn";
 type TargetKind = "pid" | "name" | "package";
 type LevelFilter = "all" | "info" | "warn" | "error";
 type ScriptHubTab = "local" | "codeshare";
+type ScriptListItem = ScriptTemplate & {
+  favorite?: boolean;
+  tags?: string[];
+  lastUsedAt?: string;
+  origin?: string;
+};
+type ScriptEditorApi = {
+  focus: () => void;
+  format: () => Promise<void>;
+  find: () => void;
+  replace: (source: string) => void;
+};
 
 const views: Array<{ key: ViewKey; label: string; icon: unknown }> = [
   { key: "devices", label: "设备", icon: MonitorSmartphone },
@@ -70,11 +88,22 @@ const processQuery = ref("");
 const appQuery = ref("");
 const processTab = ref<"processes" | "apps">("processes");
 
-const scripts = ref<ScriptTemplate[]>([]);
+const scripts = ref<ScriptListItem[]>([]);
+const savedScripts = ref<LocalScript[]>([]);
 const operations = ref<OperationTemplate[]>([]);
 const scriptHubTab = ref<ScriptHubTab>("local");
 const selectedScriptID = ref("");
 const editorSource = ref("");
+const scriptQuery = ref("");
+const selectedTag = ref("all");
+const scriptNameInput = ref("");
+const scriptDescriptionInput = ref("");
+const scriptTagsInput = ref("");
+const scriptFavorite = ref(false);
+const variablePackageName = ref("");
+const variableModuleName = ref("");
+const variableFunctionName = ref("");
+const variableOutputDir = ref("/data/local/tmp");
 const codeShareQuery = ref("");
 const codeShareResult = ref<CodeShareSearchResult | null>(null);
 const activeCodeShareProject = ref<CodeShareProject | null>(null);
@@ -92,6 +121,7 @@ const fridaRemotePath = ref("/data/local/tmp/frida-server");
 const forceRestart = ref(false);
 
 let unsubscribeLogs: () => void = () => {};
+let scriptEditor: ScriptEditorApi | null = null;
 
 const currentTitle = computed(() => views.find((view) => view.key === activeView.value)?.label ?? "");
 const selectedDevice = computed(() => devices.value.find((device) => device.serial === selectedSerial.value));
@@ -103,12 +133,50 @@ const selectedDeviceLabel = computed(() => {
   return `${selectedDevice.value.serial}${model ? ` · ${model}` : ""}`;
 });
 
-const activeScript = computed(() => scripts.value.find((script) => script.id === selectedScriptID.value));
+const activeScript = computed(() =>
+  [...savedScriptItems.value, ...scripts.value].find((script) => script.id === selectedScriptID.value)
+);
 const activeScriptName = computed(() => activeScript.value?.name || "自定义脚本");
 const canRunScript = computed(() => Boolean(selectedSerial.value && target.value.trim() && editorSource.value.trim()));
-const localScripts = computed(() => scripts.value.filter((script) => !script.id.startsWith("codeshare:")));
+const savedScriptItems = computed<ScriptListItem[]>(() =>
+  savedScripts.value.map((script) => ({
+    id: `saved:${script.id}`,
+    name: script.name,
+    category: script.favorite ? "我的收藏" : "我的脚本",
+    description: script.description || script.origin || "本地脚本库",
+    source: script.source,
+    favorite: script.favorite,
+    tags: script.tags,
+    lastUsedAt: script.lastUsedAt,
+    origin: script.origin
+  }))
+);
+const localScripts = computed(() => {
+  const query = scriptQuery.value.trim().toLowerCase();
+  const tag = selectedTag.value;
+  return [...savedScriptItems.value, ...scripts.value.filter((script) => !script.id.startsWith("codeshare:"))].filter(
+    (script) => {
+      const tags = script.tags ?? [];
+      const tagMatches = tag === "all" || tags.some((item) => item.toLowerCase() === tag.toLowerCase());
+      const textMatches =
+        !query ||
+        [script.name, script.category, script.description, tags.join(" ")].some((value) =>
+          String(value).toLowerCase().includes(query)
+        );
+      return tagMatches && textMatches;
+    }
+  );
+});
+const localScriptTags = computed(() => {
+  const tags = new Set<string>();
+  savedScripts.value.forEach((script) => script.tags.forEach((tag) => tags.add(tag)));
+  return Array.from(tags).sort((a, b) => a.localeCompare(b));
+});
 const codeShareItems = computed(() => codeShareResult.value?.items ?? []);
 const codeShareSourceLabel = computed(() => codeShareResult.value?.source === "cache" ? "本地缓存" : "在线");
+const selectedLocalScriptID = computed(() =>
+  selectedScriptID.value.startsWith("saved:") ? selectedScriptID.value.slice("saved:".length) : ""
+);
 
 const filteredProcesses = computed(() => {
   const query = processQuery.value.trim().toLowerCase();
@@ -208,12 +276,14 @@ async function refreshApps() {
 
 async function refreshScripts() {
   await withBusy("scripts", async () => {
-	const externalScripts = scripts.value.filter((script) =>
-		script.id.startsWith("imported:") || script.id.startsWith("codeshare:")
-	);
-	scripts.value = [...externalScripts, ...(await api.listScripts())];
+    const externalScripts = scripts.value.filter((script) =>
+      script.id.startsWith("imported:") || script.id.startsWith("codeshare:")
+    );
+    const [builtInScripts, localLibrary] = await Promise.all([api.listScripts(), api.listLocalScripts()]);
+    savedScripts.value = localLibrary;
+    scripts.value = [...externalScripts, ...builtInScripts];
     if (!selectedScriptID.value && scripts.value.length > 0) {
-      selectScript(scripts.value[0]);
+      selectScript(savedScriptItems.value[0] ?? scripts.value[0]);
     }
   });
 }
@@ -257,6 +327,10 @@ async function refreshSessions() {
 function selectScript(script: ScriptTemplate) {
   selectedScriptID.value = script.id;
   editorSource.value = script.source;
+  scriptNameInput.value = script.name || "";
+  scriptDescriptionInput.value = script.description || "";
+  scriptTagsInput.value = (("tags" in script && Array.isArray(script.tags)) ? script.tags : []).join(", ");
+  scriptFavorite.value = Boolean("favorite" in script && script.favorite);
   if (script.id.startsWith("codeshare:")) {
     scriptHubTab.value = "codeshare";
   } else {
@@ -264,6 +338,87 @@ function selectScript(script: ScriptTemplate) {
     activeCodeShareProject.value = null;
   }
   activeView.value = "scripts";
+}
+
+function onScriptEditorReady(apiRef: ScriptEditorApi) {
+  scriptEditor = apiRef;
+}
+
+async function saveCurrentScript() {
+  await withBusy("save-script", async () => {
+    const request: SaveLocalScriptRequest = {
+      id: selectedLocalScriptID.value,
+      name: scriptNameInput.value.trim() || activeScriptName.value,
+      description: scriptDescriptionInput.value.trim(),
+      tags: parseTags(scriptTagsInput.value),
+      favorite: scriptFavorite.value,
+      source: editorSource.value,
+      origin: activeCodeShareProject.value ? `codeshare:@${activeCodeShareProject.value.ref}` : "local"
+    };
+    const saved = await api.saveLocalScript(request);
+    await refreshScripts();
+    const item = savedScriptItems.value.find((script) => script.id === `saved:${saved.id}`);
+    if (item) {
+      selectScript(item);
+    }
+  });
+}
+
+async function deleteCurrentLocalScript() {
+  if (!selectedLocalScriptID.value) {
+    return;
+  }
+  if (!window.confirm(`确认删除本地脚本“${activeScriptName.value}”？`)) {
+    return;
+  }
+  await withBusy("delete-script", async () => {
+    await api.deleteLocalScript(selectedLocalScriptID.value);
+    selectedScriptID.value = "";
+    await refreshScripts();
+    const fallback = savedScriptItems.value[0] ?? scripts.value.find((script) => !script.id.startsWith("codeshare:"));
+    if (fallback) {
+      selectScript(fallback);
+    }
+  });
+}
+
+async function toggleCurrentFavorite() {
+  scriptFavorite.value = !scriptFavorite.value;
+  if (selectedLocalScriptID.value) {
+    await saveCurrentScript();
+  }
+}
+
+function parseTags(value: string) {
+  return value
+    .split(/[,，\s]+/)
+    .map((tag) => tag.trim().replace(/^#/, ""))
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function applyRuntimeVariables(source: string) {
+  const values: Record<string, string> = {
+    deviceSerial: selectedSerial.value,
+    target: target.value.trim(),
+    targetKind: runMode.value === "spawn" ? "package" : targetKind.value,
+    packageName:
+      variablePackageName.value.trim() ||
+      (runMode.value === "spawn" || targetKind.value === "package" ? target.value.trim() : ""),
+    moduleName: variableModuleName.value.trim(),
+    functionName: variableFunctionName.value.trim(),
+    outputDir: variableOutputDir.value.trim() || "/data/local/tmp"
+  };
+  return source.replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g, (match, key: string) =>
+    Object.prototype.hasOwnProperty.call(values, key) ? values[key] : match
+  );
+}
+
+function applyVariablesToEditor() {
+  const nextSource = applyRuntimeVariables(editorSource.value);
+  editorSource.value = nextSource;
+  scriptEditor?.replace(nextSource);
+  appendLocalLog("info", "ui", "已将运行变量写入编辑器");
 }
 
 async function openCodeShare() {
@@ -369,6 +524,7 @@ function prepareAttach(process: AndroidProcess) {
   runMode.value = "attach";
   targetKind.value = "pid";
   target.value = String(process.pid);
+  variablePackageName.value = process.package || process.name || variablePackageName.value;
   activeView.value = "scripts";
 }
 
@@ -381,6 +537,7 @@ function prepareSpawn(app: AndroidApp) {
   runMode.value = "spawn";
   targetKind.value = "package";
   target.value = app.package;
+  variablePackageName.value = app.package;
   activeView.value = "scripts";
 }
 
@@ -391,14 +548,19 @@ async function spawnApp(app: AndroidApp) {
 
 async function runCurrentScript() {
   await withBusy("run-script", async () => {
+    const source = applyRuntimeVariables(editorSource.value);
     const session = await api.runScript({
       deviceSerial: selectedSerial.value,
       mode: runMode.value,
       targetKind: runMode.value === "spawn" ? "package" : targetKind.value,
       target: target.value.trim(),
       scriptName: activeScriptName.value,
-      scriptSource: editorSource.value
+      scriptSource: source
     });
+    if (selectedLocalScriptID.value) {
+      await api.recordLocalScriptRun(selectedLocalScriptID.value);
+      await refreshScripts();
+    }
     appendLocalLog("info", "ui", `已创建 Frida 会话 ${session.id}`);
     await refreshSessions();
   });
@@ -788,6 +950,18 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
           </div>
 
           <template v-if="scriptHubTab === 'local'">
+            <label class="search-box compact-search script-filter">
+              <Search :size="16" />
+              <input v-model="scriptQuery" type="search" placeholder="搜索脚本、标签" />
+            </label>
+
+            <select v-if="localScriptTags.length > 0" v-model="selectedTag" class="tag-filter">
+              <option value="all">全部标签</option>
+              <option v-for="tag in localScriptTags" :key="tag" :value="tag">{{ tag }}</option>
+            </select>
+
+            <div v-if="localScripts.length === 0" class="empty compact-empty">暂无脚本</div>
+
             <button
               v-for="script in localScripts"
               :key="script.id"
@@ -796,9 +970,15 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
               type="button"
               @click="selectScript(script)"
             >
-              <span>{{ script.category }}</span>
+              <span class="script-item-meta">
+                <Star v-if="script.favorite" :size="12" />
+                <span>{{ script.category }}</span>
+              </span>
               <strong>{{ script.name }}</strong>
               <small>{{ script.description }}</small>
+              <div v-if="script.tags?.length" class="tag-row">
+                <span v-for="tag in script.tags" :key="tag">#{{ tag }}</span>
+              </div>
             </button>
 
             <div class="hub-divider">
@@ -878,10 +1058,32 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
               <h2>脚本编辑器</h2>
               <p>{{ activeScriptName }}</p>
             </div>
-            <button class="primary-button" type="button" :disabled="!canRunScript" @click="runCurrentScript">
-              <Play :size="17" />
-              <span>注入</span>
-            </button>
+            <div class="header-controls">
+              <button class="icon-button" type="button" title="收藏脚本" @click="toggleCurrentFavorite">
+                <Star v-if="scriptFavorite" :size="17" />
+                <StarOff v-else :size="17" />
+              </button>
+              <button class="icon-button" type="button" title="保存到本地脚本库" @click="saveCurrentScript">
+                <Save :size="17" />
+              </button>
+              <button
+                class="icon-button danger"
+                type="button"
+                title="删除本地脚本"
+                :disabled="!selectedLocalScriptID"
+                @click="deleteCurrentLocalScript"
+              >
+                <Trash2 :size="17" />
+              </button>
+              <button class="icon-button" type="button" title="查找" @click="scriptEditor?.find()">
+                <Search :size="17" />
+              </button>
+              <button class="small-button" type="button" title="格式化脚本" @click="scriptEditor?.format()">格式化</button>
+              <button class="primary-button" type="button" :disabled="!canRunScript" @click="runCurrentScript">
+                <Play :size="17" />
+                <span>注入</span>
+              </button>
+            </div>
           </div>
 
           <div v-if="activeCodeShareProject" class="codeshare-meta">
@@ -922,7 +1124,42 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
             </label>
           </div>
 
-          <textarea v-model="editorSource" spellcheck="false" class="code-editor" />
+          <div class="script-meta-grid">
+            <label>
+              <span>脚本名称</span>
+              <input v-model="scriptNameInput" type="text" maxlength="80" placeholder="脚本名称" />
+            </label>
+            <label>
+              <span>标签</span>
+              <input v-model="scriptTagsInput" type="text" placeholder="ssl, native, debug" />
+            </label>
+            <label class="script-description-input">
+              <span>描述</span>
+              <input v-model="scriptDescriptionInput" type="text" maxlength="180" placeholder="用途说明" />
+            </label>
+          </div>
+
+          <div class="variable-panel">
+            <label>
+              <span>packageName</span>
+              <input v-model="variablePackageName" type="text" placeholder="{{packageName}}" />
+            </label>
+            <label>
+              <span>moduleName</span>
+              <input v-model="variableModuleName" type="text" placeholder="{{moduleName}}" />
+            </label>
+            <label>
+              <span>functionName</span>
+              <input v-model="variableFunctionName" type="text" placeholder="{{functionName}}" />
+            </label>
+            <label>
+              <span>outputDir</span>
+              <input v-model="variableOutputDir" type="text" placeholder="{{outputDir}}" />
+            </label>
+            <button class="small-button strong" type="button" @click="applyVariablesToEditor">写入变量</button>
+          </div>
+
+          <ScriptEditor v-model="editorSource" language="javascript" @ready="onScriptEditorReady" />
         </div>
 
         <div class="panel sessions-panel">
@@ -1525,6 +1762,16 @@ td.empty {
   margin: 10px 10px 0;
 }
 
+.script-filter,
+.tag-filter {
+  width: calc(100% - 20px);
+  margin: 10px 10px 0;
+}
+
+.tag-filter {
+  height: 34px;
+}
+
 .codeshare-search {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 36px;
@@ -1634,6 +1881,12 @@ td.empty {
   font-size: 11px;
 }
 
+.script-item-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .script-item strong,
 .operation-item strong {
   color: #20252d;
@@ -1649,6 +1902,21 @@ td.empty {
   line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.tag-row span {
+  min-height: 20px;
+  padding: 2px 6px;
+  color: #14624f;
+  background: #e9f7f1;
+  border-radius: 5px;
 }
 
 .operation-item {
@@ -1674,11 +1942,11 @@ td.empty {
 .editor-panel {
   display: grid;
   min-height: 0;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
 }
 
 .editor-panel.codeshare-active {
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
 }
 
 .codeshare-meta {
@@ -1750,17 +2018,27 @@ td.empty {
   min-width: 180px;
 }
 
-.code-editor {
-  min-height: 360px;
-  padding: 14px 16px;
-  color: #f0f4f8;
-  background: #171c21;
-  border: 0;
-  border-radius: 0;
-  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.55;
-  white-space: pre;
+.script-meta-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(180px, 240px) minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 16px;
+  background: #fbfcfd;
+  border-bottom: 1px solid #e7ebf0;
+}
+
+.script-description-input {
+  min-width: 220px;
+}
+
+.variable-panel {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr)) auto;
+  align-items: end;
+  gap: 10px;
+  padding: 12px 16px;
+  background: #f6f8fa;
+  border-bottom: 1px solid #e7ebf0;
 }
 
 .sessions-panel {
@@ -1894,7 +2172,9 @@ td.empty {
 
   .grid-2,
   .script-layout,
-  .run-grid {
+  .run-grid,
+  .script-meta-grid,
+  .variable-panel {
     grid-template-columns: 1fr;
   }
 
