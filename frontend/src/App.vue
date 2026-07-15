@@ -1159,7 +1159,7 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
             <button class="small-button strong" type="button" @click="applyVariablesToEditor">写入变量</button>
           </div>
 
-          <ScriptEditor v-model="editorSource" language="javascript" @ready="onScriptEditorReady" />
+          <ScriptEditor v-model="editorSource" class="monaco-shell" language="javascript" @ready="onScriptEditorReady" />
         </div>
 
         <div class="panel sessions-panel">
@@ -1941,12 +1941,14 @@ td.empty {
 
 .editor-panel {
   display: grid;
+  min-width: 0;
   min-height: 0;
-  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  overflow: hidden;
+  grid-template-rows: auto auto auto auto auto;
 }
 
 .editor-panel.codeshare-active {
-  grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto auto auto;
 }
 
 .codeshare-meta {
@@ -2039,6 +2041,11 @@ td.empty {
   padding: 12px 16px;
   background: #f6f8fa;
   border-bottom: 1px solid #e7ebf0;
+}
+
+.monaco-shell {
+  min-height: 300px;
+  overflow: hidden;
 }
 
 .sessions-panel {
