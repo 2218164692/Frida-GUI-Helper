@@ -12,9 +12,11 @@ import (
 
 	"frida-gui-helper/internal/adb"
 	"frida-gui-helper/internal/codeshare"
+	"frida-gui-helper/internal/diagnostics"
 	"frida-gui-helper/internal/frida"
 	"frida-gui-helper/internal/logstream"
 	"frida-gui-helper/internal/operations"
+	"frida-gui-helper/internal/processutil"
 	"frida-gui-helper/internal/scripts"
 	"frida-gui-helper/internal/scriptstore"
 	"frida-gui-helper/internal/toolchain"
@@ -470,6 +472,13 @@ func (a *App) baseContext() context.Context {
 }
 
 func (a *App) addLog(level string, source string, message string) {
+	if finding, ok := diagnostics.Classify(source, message); ok {
+		if level == "info" {
+			level = "error"
+		}
+		a.logs.AddWithDiagnostic(logstream.Level(level), source, message, &finding)
+		return
+	}
 	a.logs.Add(logstream.Level(level), source, message)
 }
 
@@ -579,7 +588,7 @@ func (a *App) runCLI(ctx context.Context, name string, args ...string) error {
 		a.logCommandResult(name, name+" "+strings.Join(args, " "), "", err)
 		return err
 	}
-	cmd := exec.CommandContext(ctx, tool.Path, args...)
+	cmd := processutil.HideWindow(exec.CommandContext(ctx, tool.Path, args...))
 	output, err := cmd.CombinedOutput()
 	a.logCommandResult(name, name+"["+tool.Source+"] "+strings.Join(args, " "), string(output), err)
 	return err
@@ -644,7 +653,7 @@ func checkTool(ctx context.Context, name string, versionArg string) ToolStatus {
 	cmdCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cmdCtx, tool.Path, versionArg)
+	cmd := processutil.HideWindow(exec.CommandContext(cmdCtx, tool.Path, versionArg))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		status.Error = strings.TrimSpace(string(output))

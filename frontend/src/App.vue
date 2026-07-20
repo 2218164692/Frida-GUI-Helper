@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   AlertTriangle,
   ChevronLeft,
@@ -39,6 +39,8 @@ import {
   type CodeShareProjectSummary,
   type CodeShareSearchResult,
   type Device,
+  type DiagnosticFinding,
+  type FridaServerStatus,
   type LocalScript,
   type LogEntry,
   type OperationTemplate,
@@ -119,9 +121,13 @@ const logLevel = ref<LevelFilter>("all");
 const fridaLocalPath = ref("");
 const fridaRemotePath = ref("/data/local/tmp/frida-server");
 const forceRestart = ref(false);
+const serverStatus = ref<FridaServerStatus | null>(null);
+const serverStatusBusy = ref(false);
+const lastDiagnostic = ref<DiagnosticFinding | null>(null);
 
 let unsubscribeLogs: () => void = () => {};
 let scriptEditor: ScriptEditorApi | null = null;
+let serverStatusTimer: number | undefined;
 
 const currentTitle = computed(() => views.find((view) => view.key === activeView.value)?.label ?? "");
 const selectedDevice = computed(() => devices.value.find((device) => device.serial === selectedSerial.value));
@@ -218,18 +224,64 @@ const runningSessions = computed(() => sessions.value.filter((session) => sessio
 onMounted(async () => {
   unsubscribeLogs = subscribeLogs((entry) => {
     logs.value = [...logs.value, entry].slice(-1000);
+    if (entry.diagnostic) {
+      lastDiagnostic.value = entry.diagnostic;
+    }
   });
   await bootstrap();
+  serverStatusTimer = window.setInterval(() => {
+    if (selectedSerial.value && !serverStatusBusy.value) {
+      void refreshServerStatus(false);
+    }
+  }, 10000);
 });
 
 onUnmounted(() => {
   unsubscribeLogs();
+  if (serverStatusTimer !== undefined) {
+    window.clearInterval(serverStatusTimer);
+  }
+});
+
+watch(selectedSerial, () => {
+  serverStatus.value = null;
+  if (selectedSerial.value) {
+    void refreshServerStatus();
+  }
 });
 
 async function bootstrap() {
   await Promise.all([refreshStatus(), refreshScripts(), refreshOperations(), refreshLogs()]);
   await refreshDevices();
+  await refreshServerStatus(false);
   await refreshSessions();
+}
+
+async function refreshServerStatus(showError = true) {
+  if (!selectedSerial.value || serverStatusBusy.value) {
+    return;
+  }
+  serverStatusBusy.value = true;
+  try {
+    serverStatus.value = await api.getFridaServerStatus(selectedSerial.value);
+  } catch (error) {
+    serverStatus.value = {
+      state: "unavailable",
+      pid: "",
+      user: "",
+      path: "",
+      serverVersion: "",
+      cliVersion: "",
+      versionMatch: false,
+      checkedAt: new Date().toISOString(),
+      error: error instanceof Error ? error.message : String(error)
+    };
+    if (showError) {
+      notice.value = serverStatus.value.error;
+    }
+  } finally {
+    serverStatusBusy.value = false;
+  }
 }
 
 async function withBusy<T>(key: string, action: () => Promise<T>): Promise<T | undefined> {
@@ -517,7 +569,47 @@ async function startFridaServer() {
       forceRestart: forceRestart.value
     });
     await refreshStatus();
+    await refreshServerStatus();
   });
+}
+
+async function exportDiagnosticBundle() {
+  await withBusy("export-diagnostics", async () => {
+    const path = await api.exportDiagnosticBundle(selectedSerial.value);
+    if (path) {
+      appendLocalLog("info", "ui", "诊断包导出完成");
+    }
+  });
+}
+
+async function recoverFromDiagnostic() {
+  const diagnostic = lastDiagnostic.value;
+  if (!diagnostic) {
+    return;
+  }
+  if (diagnostic.recovery === "attach") {
+    runMode.value = "attach";
+    targetKind.value = "package";
+    activeView.value = "scripts";
+    lastDiagnostic.value = null;
+    notice.value = "已切换为 Attach。请确认目标 App 已手动启动，然后重新运行脚本。";
+    return;
+  }
+  if (diagnostic.recovery === "server-check") {
+    activeView.value = "devices";
+    await refreshServerStatus();
+    return;
+  }
+  if (diagnostic.recovery === "processes") {
+    activeView.value = "processes";
+    processTab.value = "processes";
+    await refreshProcesses();
+    return;
+  }
+  if (diagnostic.recovery === "devices") {
+    activeView.value = "devices";
+    await refreshDevices();
+  }
 }
 
 function prepareAttach(process: AndroidProcess) {
@@ -572,6 +664,9 @@ async function runOperation(operation: OperationTemplate) {
       id: operation.id,
       deviceSerial: selectedSerial.value
     });
+    if (operation.id.startsWith("frida-server")) {
+      await refreshServerStatus(false);
+    }
     activeView.value = "logs";
   });
 }
@@ -615,6 +710,23 @@ function toolLabel(tool?: ToolStatus) {
   }
   const detail = tool.version || tool.error || "未检测";
   return tool.source ? `${detail} · ${tool.source}` : detail;
+}
+
+function serverStateLabel(status?: FridaServerStatus | null) {
+  switch (status?.state) {
+    case "running":
+      return `运行中${status.pid ? ` · PID ${status.pid}` : ""}`;
+    case "mismatch":
+      return "版本不匹配";
+    case "degraded":
+      return "运行异常";
+    case "stopped":
+      return "未运行";
+    case "unavailable":
+      return "设备不可用";
+    default:
+      return "等待检测";
+  }
 }
 
 function appendLocalLog(level: LogEntry["level"], source: string, message: string) {
@@ -689,6 +801,22 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
         <span>{{ notice }}</span>
       </div>
 
+      <div v-if="lastDiagnostic" class="diagnostic-banner">
+        <AlertTriangle :size="19" />
+        <div>
+          <strong>{{ lastDiagnostic.title }}</strong>
+          <span>{{ lastDiagnostic.reason }}</span>
+          <small>{{ lastDiagnostic.action }}</small>
+        </div>
+        <div class="diagnostic-actions">
+          <button v-if="lastDiagnostic.recoverable" class="small-button strong" type="button" @click="recoverFromDiagnostic">
+            执行建议
+          </button>
+          <button class="small-button" type="button" @click="exportDiagnosticBundle">导出诊断包</button>
+          <button class="small-button" type="button" @click="lastDiagnostic = null">关闭</button>
+        </div>
+      </div>
+
       <section v-if="activeView === 'devices'" class="workspace grid-2">
         <div class="panel">
           <div class="panel-header">
@@ -732,6 +860,19 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
           </div>
 
           <div class="form-stack">
+            <div class="server-state" :class="serverStatus?.state || 'unknown'" :title="serverStatus?.error || ''">
+              <span class="server-state-dot"></span>
+              <div>
+                <strong>{{ serverStateLabel(serverStatus) }}</strong>
+                <small v-if="serverStatus?.serverVersion || serverStatus?.cliVersion">
+                  CLI {{ serverStatus.cliVersion || "-" }} · server {{ serverStatus.serverVersion || "-" }}
+                </small>
+                <small v-else>{{ serverStatus?.error || "选择设备后自动检测" }}</small>
+              </div>
+              <button class="icon-button" type="button" title="刷新 server 状态" :disabled="serverStatusBusy" @click="refreshServerStatus()">
+                <RefreshCw :size="16" :class="{ spin: serverStatusBusy }" />
+              </button>
+            </div>
             <label>
               <span>本地二进制</span>
               <input v-model="fridaLocalPath" type="text" placeholder="留空使用 tools/frida-server 内置文件" />
@@ -747,6 +888,10 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
             <button class="primary-button" type="button" :disabled="!selectedSerial" @click="startFridaServer">
               <Server :size="17" />
               <span>启动守护</span>
+            </button>
+            <button class="secondary-button" type="button" @click="exportDiagnosticBundle">
+              <Download :size="17" />
+              <span>导出诊断包</span>
             </button>
           </div>
         </div>
@@ -1210,6 +1355,10 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
             <button class="icon-button" type="button" title="导出日志" @click="exportLogs">
               <Download :size="17" />
             </button>
+            <button class="text-button" type="button" title="导出脱敏诊断包" @click="exportDiagnosticBundle">
+              <Wrench :size="16" />
+              <span>诊断包</span>
+            </button>
             <button class="icon-button danger" type="button" title="清空日志" @click="clearLogs">
               <Trash2 :size="17" />
             </button>
@@ -1411,6 +1560,39 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
   white-space: nowrap;
 }
 
+.diagnostic-banner {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 12px 22px;
+  color: #5f3512;
+  background: #fff8e8;
+  border-bottom: 1px solid #ecd6a3;
+}
+
+.diagnostic-banner > div:not(.diagnostic-actions) {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.diagnostic-banner span,
+.diagnostic-banner small {
+  line-height: 1.45;
+}
+
+.diagnostic-banner small {
+  color: #765c37;
+}
+
+.diagnostic-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
 .workspace {
   display: grid;
   min-height: 0;
@@ -1466,6 +1648,7 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
 .icon-button,
 .small-button,
 .primary-button,
+.secondary-button,
 .text-button,
 .segmented button {
   display: inline-flex;
@@ -1485,7 +1668,8 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
 }
 
 .text-button,
-.primary-button {
+.primary-button,
+.secondary-button {
   padding: 0 13px;
 }
 
@@ -1549,6 +1733,56 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
   display: grid;
   gap: 12px;
   padding: 16px;
+}
+
+.server-state {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 8px 10px;
+  background: #f5f7f9;
+  border: 1px solid #d9e0e6;
+  border-radius: 7px;
+}
+
+.server-state > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.server-state strong,
+.server-state small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-state small {
+  color: #66717c;
+}
+
+.server-state-dot {
+  width: 9px;
+  height: 9px;
+  background: #87929d;
+  border-radius: 50%;
+}
+
+.server-state.running .server-state-dot {
+  background: #16805f;
+}
+
+.server-state.mismatch .server-state-dot,
+.server-state.degraded .server-state-dot {
+  background: #c47a16;
+}
+
+.server-state.stopped .server-state-dot,
+.server-state.unavailable .server-state-dot {
+  background: #b44032;
 }
 
 label {
@@ -2183,6 +2417,15 @@ td.empty {
   .script-meta-grid,
   .variable-panel {
     grid-template-columns: 1fr;
+  }
+
+  .diagnostic-banner {
+    grid-template-columns: 20px minmax(0, 1fr);
+  }
+
+  .diagnostic-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
   }
 
   .script-list {

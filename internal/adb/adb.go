@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"frida-gui-helper/internal/processutil"
 	"frida-gui-helper/internal/toolchain"
 )
 
@@ -384,6 +385,18 @@ func (r *Runner) FridaServerVersion(ctx context.Context, serial string, preferre
 	return remotePath, version, nil
 }
 
+func (r *Runner) InspectFridaServerVersion(ctx context.Context, serial string, preferredPath string) (string, string, error) {
+	remotePath, err := r.FindFridaServerBinary(ctx, serial, preferredPath)
+	if err != nil {
+		return "", "", err
+	}
+	version, err := r.verifyFridaServerBinary(ctx, serial, remotePath)
+	if err != nil {
+		return remotePath, "", err
+	}
+	return remotePath, version, nil
+}
+
 func (r *Runner) resolveFridaServerPushPath(ctx context.Context, serial string, requestedPath string) (string, error) {
 	kind, err := r.remotePathKind(ctx, serial, requestedPath)
 	if err != nil {
@@ -565,7 +578,7 @@ func (r *Runner) runInternal(ctx context.Context, logError bool, args ...string)
 		return "", fmt.Errorf("adb not found: %s", adbTool.Error)
 	}
 
-	cmd := exec.CommandContext(cmdCtx, adbTool.Path, args...)
+	cmd := processutil.HideWindow(exec.CommandContext(cmdCtx, adbTool.Path, args...))
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout

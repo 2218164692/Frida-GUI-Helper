@@ -3,6 +3,8 @@ package logstream
 import (
 	"sync"
 	"time"
+
+	"frida-gui-helper/internal/diagnostics"
 )
 
 type Level string
@@ -14,10 +16,11 @@ const (
 )
 
 type Entry struct {
-	Time    string `json:"time"`
-	Level   Level  `json:"level"`
-	Source  string `json:"source"`
-	Message string `json:"message"`
+	Time       string               `json:"time"`
+	Level      Level                `json:"level"`
+	Source     string               `json:"source"`
+	Message    string               `json:"message"`
+	Diagnostic *diagnostics.Finding `json:"diagnostic,omitempty"`
 }
 
 type Emitter func(Entry)
@@ -43,15 +46,20 @@ func (s *Stream) SetEmitter(emit Emitter) {
 }
 
 func (s *Stream) Add(level Level, source string, message string) Entry {
+	return s.AddWithDiagnostic(level, source, message, nil)
+}
+
+func (s *Stream) AddWithDiagnostic(level Level, source string, message string, finding *diagnostics.Finding) Entry {
 	if level == "" {
 		level = LevelInfo
 	}
 
 	entry := Entry{
-		Time:    time.Now().Format("15:04:05"),
-		Level:   level,
-		Source:  source,
-		Message: message,
+		Time:       time.Now().Format("15:04:05"),
+		Level:      level,
+		Source:     source,
+		Message:    message,
+		Diagnostic: finding,
 	}
 
 	var emit Emitter

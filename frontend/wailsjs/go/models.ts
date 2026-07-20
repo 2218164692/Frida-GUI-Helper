@@ -196,6 +196,33 @@ export namespace codeshare {
 
 }
 
+export namespace diagnostics {
+
+	export class Finding {
+	    code: string;
+	    title: string;
+	    reason: string;
+	    action: string;
+	    recovery: string;
+	    recoverable: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new Finding(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.code = source["code"];
+	        this.title = source["title"];
+	        this.reason = source["reason"];
+	        this.action = source["action"];
+	        this.recovery = source["recovery"];
+	        this.recoverable = source["recoverable"];
+	    }
+	}
+
+}
+
 export namespace frida {
 	
 	export class SessionInfo {
@@ -256,6 +283,7 @@ export namespace logstream {
 	    level: string;
 	    source: string;
 	    message: string;
+	    diagnostic?: diagnostics.Finding;
 	
 	    static createFrom(source: any = {}) {
 	        return new Entry(source);
@@ -267,7 +295,26 @@ export namespace logstream {
 	        this.level = source["level"];
 	        this.source = source["source"];
 	        this.message = source["message"];
+	        this.diagnostic = this.convertValues(source["diagnostic"], diagnostics.Finding);
 	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }
@@ -290,6 +337,34 @@ export namespace main {
 	        this.localPath = source["localPath"];
 	        this.remotePath = source["remotePath"];
 	        this.forceRestart = source["forceRestart"];
+	    }
+	}
+	export class FridaServerStatus {
+	    state: string;
+	    pid: string;
+	    user: string;
+	    path: string;
+	    serverVersion: string;
+	    cliVersion: string;
+	    versionMatch: boolean;
+	    checkedAt: string;
+	    error: string;
+
+	    static createFrom(source: any = {}) {
+	        return new FridaServerStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.pid = source["pid"];
+	        this.user = source["user"];
+	        this.path = source["path"];
+	        this.serverVersion = source["serverVersion"];
+	        this.cliVersion = source["cliVersion"];
+	        this.versionMatch = source["versionMatch"];
+	        this.checkedAt = source["checkedAt"];
+	        this.error = source["error"];
 	    }
 	}
 	export class ImportedScript {
@@ -513,4 +588,3 @@ export namespace scriptstore {
 	}
 
 }
-

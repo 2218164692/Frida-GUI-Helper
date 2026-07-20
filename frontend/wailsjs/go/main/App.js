@@ -10,8 +10,16 @@ export function DeleteLocalScript(arg1) {
   return window['go']['main']['App']['DeleteLocalScript'](arg1);
 }
 
+export function ExportDiagnosticBundle(arg1) {
+  return window['go']['main']['App']['ExportDiagnosticBundle'](arg1);
+}
+
 export function GetCodeShareProject(arg1) {
   return window['go']['main']['App']['GetCodeShareProject'](arg1);
+}
+
+export function GetFridaServerStatus(arg1) {
+  return window['go']['main']['App']['GetFridaServerStatus'](arg1);
 }
 
 export function GetLogs() {

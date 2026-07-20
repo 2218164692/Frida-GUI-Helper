@@ -126,6 +126,28 @@ export interface LogEntry {
   level: "info" | "warn" | "error";
   source: string;
   message: string;
+  diagnostic?: DiagnosticFinding;
+}
+
+export interface DiagnosticFinding {
+  code: string;
+  title: string;
+  reason: string;
+  action: string;
+  recovery: "attach" | "server-check" | "processes" | "devices" | string;
+  recoverable: boolean;
+}
+
+export interface FridaServerStatus {
+  state: "unknown" | "running" | "stopped" | "degraded" | "mismatch" | "unavailable";
+  pid: string;
+  user: string;
+  path: string;
+  serverVersion: string;
+  cliVersion: string;
+  versionMatch: boolean;
+  checkedAt: string;
+  error: string;
 }
 
 export interface SessionInfo {
@@ -207,6 +229,22 @@ const mockBackend: BackendApp = {
   },
   async StartFridaServer() {
     return undefined;
+  },
+  async GetFridaServerStatus() {
+    return {
+      state: "unavailable",
+      pid: "",
+      user: "",
+      path: "",
+      serverVersion: "",
+      cliVersion: "",
+      versionMatch: false,
+      checkedAt: new Date().toISOString(),
+      error: "Wails 后端未连接"
+    } satisfies FridaServerStatus;
+  },
+  async ExportDiagnosticBundle() {
+    return "";
   },
   async ListScripts() {
     return mockScripts;
@@ -312,6 +350,8 @@ export const api = {
   listApps: (serial: string, includeSystem: boolean) => invokeArray<AndroidApp>("ListApps", serial, includeSystem),
   listProcesses: (serial: string) => invokeArray<AndroidProcess>("ListProcesses", serial),
   startFridaServer: (request: FridaServerRequest) => invoke<void>("StartFridaServer", request),
+  getFridaServerStatus: (serial: string) => invoke<FridaServerStatus>("GetFridaServerStatus", serial),
+  exportDiagnosticBundle: (serial: string) => invoke<string>("ExportDiagnosticBundle", serial),
   listScripts: () => invokeArray<ScriptTemplate>("ListScripts"),
   importScriptFile: () => invoke<ImportedScript>("ImportScriptFile"),
   listLocalScripts: () => invokeArray<LocalScript>("ListLocalScripts"),

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"frida-gui-helper/internal/processutil"
 	"frida-gui-helper/internal/toolchain"
 )
 
@@ -89,7 +90,7 @@ func (r *Runner) Status(ctx context.Context) ToolStatus {
 
 	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(cmdCtx, tool.Path, "--version")
+	cmd := processutil.HideWindow(exec.CommandContext(cmdCtx, tool.Path, "--version"))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		status.Error = strings.TrimSpace(string(out))
@@ -133,7 +134,7 @@ func (r *Runner) RunScript(ctx context.Context, req RunRequest) (SessionInfo, er
 		_ = os.Remove(scriptPath)
 		return SessionInfo{}, fmt.Errorf("frida not found: %s", fridaTool.Error)
 	}
-	cmd := exec.CommandContext(cmdCtx, fridaTool.Path, args...)
+	cmd := processutil.HideWindow(exec.CommandContext(cmdCtx, fridaTool.Path, args...))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -263,12 +264,6 @@ func (r *Runner) stream(sessionID string, pipeName string, reader io.Reader, lev
 	for scanner.Scan() {
 		line := scanner.Text()
 		r.logf(level, "frida:"+sessionID+":"+pipeName, line)
-		if strings.Contains(line, "need Gadget to attach on jailed Android") {
-			r.logf("error", "frida", "未连接到设备端 frida-server。请下载与本机 Frida CLI 完全一致版本和设备架构匹配的 frida-server，推送到 /data/local/tmp/frida-server 后启动。")
-		}
-		if strings.Contains(line, "unexpected early end-of-stream") {
-			r.logf("error", "frida", "Frida 在脚本执行前断开。请先运行“Frida 官方 smoke test”和“检查 server 身份/版本”；如果 smoke test 正常，再用“连接探针”模板区分目标 App 启动崩溃、反调试/反 Frida、或脚本逻辑问题。")
-		}
 	}
 	if err := scanner.Err(); err != nil {
 		r.logf("error", "frida:"+sessionID, err.Error())
