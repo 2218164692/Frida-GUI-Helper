@@ -8,13 +8,21 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
-    "@lucide/vue": "^1.24.0",
-    "@vitejs/plugin-vue": "^5.2.1",
-    "monaco-editor": "^0.55.1",
-    "typescript": "^5.7.2",
-    "vite": "^6.0.3",
-    "vue": "^3.5.13",
-    "vue-tsc": "^2.1.10"
+    "@lucide/vue": "^1.26.0",
+    "monaco-editor": "^0.56.0",
+    "vue": "^3.5.40"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.8",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.5",
+    "vue-tsc": "^3.3.8"
+  },
+  "overrides": {
+    "dompurify": "3.4.12"
   }
 }

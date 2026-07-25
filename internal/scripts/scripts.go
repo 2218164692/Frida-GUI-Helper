@@ -1,5 +1,52 @@
 package scripts
 
+const nativeModuleLoader = `function hookModuleLoad(moduleName, callback) {
+    const dlopen = Module.findGlobalExportByName("android_dlopen_ext")
+        || Module.findGlobalExportByName("dlopen");
+    if (!dlopen) {
+        throw new Error("dlopen/android_dlopen_ext not found");
+    }
+
+    const hooked = new Set();
+    Interceptor.attach(dlopen, {
+        onEnter(args) {
+            try {
+                this.path = args[0].isNull() ? null : args[0].readCString();
+                this.shouldHook = this.path !== null && this.path.indexOf(moduleName) !== -1;
+            } catch (err) {
+                this.shouldHook = false;
+            }
+        },
+        onLeave(retval) {
+            if (!this.shouldHook || retval.isNull()) {
+                return;
+            }
+            const mod = Process.findModuleByName(moduleName);
+            if (!mod) {
+                return;
+            }
+            const key = mod.base.toString();
+            if (hooked.has(key)) {
+                return;
+            }
+            hooked.add(key);
+            callback(mod);
+        }
+    });
+    console.log("[loader] waiting for " + moduleName);
+}
+
+function hookNowOrOnLoad(moduleName, callback) {
+    const mod = Process.findModuleByName(moduleName);
+    if (mod) {
+        callback(mod);
+        return;
+    }
+    hookModuleLoad(moduleName, callback);
+}
+
+`
+
 type Template struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -50,52 +97,58 @@ if (Java.available) {
 			Name:        "Memory 扫描与补丁模板",
 			Category:    "高阶 Native",
 			Description: "使用 Memory.scan 搜索特征码，并可选 patch 命中地址附近的字节。",
-			Source: `const moduleName = ""; // example: "libtarget.so"; leave empty to scan readable ranges
+			Source: nativeModuleLoader + `const moduleName = ""; // example: "libtarget.so"; leave empty to scan readable ranges
 const pattern = "64 65 78 0a 30 ?? ?? 00"; // DEX magic example: dex\n0xx\0
 const maxMatches = 16;
 const patchEnabled = false;
 const patchOffset = 0;
 const patchBytes = [0x00, 0x00, 0x80, 0xd2]; // arm64: mov x0, #0
 
-function rangesToScan() {
-    if (moduleName.length > 0) {
-        const mod = Process.getModuleByName(moduleName);
-        return [{ base: mod.base, size: mod.size, protection: "module" }];
-    }
-    return Process.enumerateRanges({ protection: "r--", coalesce: true });
-}
-
 let matches = 0;
-for (const range of rangesToScan()) {
-    try {
-        Memory.scan(range.base, range.size, pattern, {
-            onMatch(address, size) {
-                matches++;
-                console.log("[scan] match #" + matches + " at " + address + " size=" + size);
-                console.log(hexdump(address, { offset: 0, length: 96, header: true, ansi: false }));
+function scanRanges(ranges) {
+    for (const range of ranges) {
+        try {
+            Memory.scan(range.base, range.size, pattern, {
+                onMatch(address, size) {
+                    matches++;
+                    console.log("[scan] match #" + matches + " at " + address + " size=" + size);
+                    console.log(hexdump(address, { offset: 0, length: 96, header: true, ansi: false }));
 
-                if (patchEnabled) {
-                    const patchAddress = address.add(patchOffset);
-                    Memory.patchCode(patchAddress, patchBytes.length, function (code) {
-                        code.writeByteArray(patchBytes);
-                    });
-                    console.log("[scan] patched " + patchAddress);
-                }
+                    if (patchEnabled) {
+                        const patchAddress = address.add(patchOffset);
+                        Memory.patchCode(patchAddress, patchBytes.length, function (code) {
+                            code.writeByteArray(patchBytes);
+                        });
+                        console.log("[scan] patched " + patchAddress);
+                    }
 
-                if (matches >= maxMatches) {
-                    return "stop";
-                }
-            },
-            onError(reason) {
-                console.log("[scan] error at " + range.base + ": " + reason);
-            },
-            onComplete() {}
-        });
-    } catch (err) {
-        console.log("[scan] skipped range " + range.base + ": " + err);
+                    if (matches >= maxMatches) {
+                        return "stop";
+                    }
+                },
+                onError(reason) {
+                    console.log("[scan] error at " + range.base + ": " + reason);
+                },
+                onComplete() {}
+            });
+        } catch (err) {
+            console.log("[scan] skipped range " + range.base + ": " + err);
+        }
     }
+    console.log("[scan] submitted scan jobs, matches are reported asynchronously");
 }
-console.log("[scan] submitted scan jobs, matches are reported asynchronously");
+
+if (moduleName.length > 0) {
+    hookNowOrOnLoad(moduleName, function (mod) {
+        try {
+            scanRanges([{ base: mod.base, size: mod.size, protection: "module" }]);
+        } catch (err) {
+            console.log("[scan] failed to scan " + moduleName + ": " + err);
+        }
+    });
+} else {
+    scanRanges(Process.enumerateRanges({ protection: "r--", coalesce: true }));
+}
 `,
 		},
 		{
@@ -163,41 +216,46 @@ console.log("[dexdump] scan submitted");
 			Name:        "Stalker Native 执行流追踪",
 			Category:    "高阶 Trace",
 			Description: "在目标 native 导出函数进入时追踪当前线程的 call/block 汇总。",
-			Source: `const moduleName = "libc.so";
+			Source: nativeModuleLoader + `const moduleName = "libc.so";
 const exportName = "open";
 const traceMs = 1500;
 
-const mod = Process.getModuleByName(moduleName);
-const target = mod.getExportByName(exportName);
-console.log("[stalker] target=" + moduleName + "!" + exportName + " @ " + target);
+hookNowOrOnLoad(moduleName, function (mod) {
+    try {
+        const target = mod.getExportByName(exportName);
+        console.log("[stalker] target=" + moduleName + "!" + exportName + " @ " + target);
 
-Interceptor.attach(target, {
-    onEnter(args) {
-        this.threadId = Process.getCurrentThreadId();
-        console.log("[stalker] follow thread " + this.threadId);
-        Stalker.follow(this.threadId, {
-            events: {
-                call: true,
-                ret: false,
-                exec: false,
-                block: true,
-                compile: false
-            },
-            onCallSummary(summary) {
-                console.log("[stalker] call summary=" + JSON.stringify(summary));
+        Interceptor.attach(target, {
+            onEnter(args) {
+                this.threadId = Process.getCurrentThreadId();
+                console.log("[stalker] follow thread " + this.threadId);
+                Stalker.follow(this.threadId, {
+                    events: {
+                        call: true,
+                        ret: false,
+                        exec: false,
+                        block: true,
+                        compile: false
+                    },
+                    onCallSummary(summary) {
+                        console.log("[stalker] call summary=" + JSON.stringify(summary));
+                    }
+                });
+
+                const tid = this.threadId;
+                setTimeout(function () {
+                    try {
+                        Stalker.unfollow(tid);
+                        Stalker.garbageCollect();
+                        console.log("[stalker] unfollow thread " + tid);
+                    } catch (err) {
+                        console.log("[stalker] unfollow failed: " + err);
+                    }
+                }, traceMs);
             }
         });
-
-        const tid = this.threadId;
-        setTimeout(function () {
-            try {
-                Stalker.unfollow(tid);
-                Stalker.garbageCollect();
-                console.log("[stalker] unfollow thread " + tid);
-            } catch (err) {
-                console.log("[stalker] unfollow failed: " + err);
-            }
-        }, traceMs);
+    } catch (err) {
+        console.log("[stalker] hook failed: " + err);
     }
 });
 `,
@@ -244,28 +302,31 @@ Interceptor.attach(target, {
 			Name:        "NativeFunction 与 RPC",
 			Category:    "高阶 Native",
 			Description: "把 App 内 native 函数包装成本地可调用函数，并通过 rpc.exports 暴露。",
-			Source: `const moduleName = "libc.so";
+			Source: nativeModuleLoader + `const moduleName = "libc.so";
 const exportName = "strlen";
 const returnType = "ulong";
 const argTypes = ["pointer"];
 
-const mod = Process.getModuleByName(moduleName);
-const target = mod.getExportByName(exportName);
-const nativeCall = new NativeFunction(target, returnType, argTypes);
-console.log("[rpc] target=" + moduleName + "!" + exportName + " @ " + target);
+hookNowOrOnLoad(moduleName, function (mod) {
+    try {
+        const target = mod.getExportByName(exportName);
+        const nativeCall = new NativeFunction(target, returnType, argTypes);
+        console.log("[rpc] target=" + moduleName + "!" + exportName + " @ " + target);
 
-rpc.exports = {
-    callstrlen(value) {
-        const text = String(value);
-        const ptrValue = Memory.allocUtf8String(text);
-        return Number(nativeCall(ptrValue));
+        rpc.exports = {
+            callstrlen(value) {
+                const text = String(value);
+                const ptrValue = Memory.allocUtf8String(text);
+                return Number(nativeCall(ptrValue));
+            }
+        };
+
+        const sample = "frida-rpc";
+        const result = nativeCall(Memory.allocUtf8String(sample));
+        console.log("[rpc] local test strlen('" + sample + "')=" + result);
+    } catch (err) {
+        console.log("[rpc] setup failed: " + err);
     }
-};
-
-setImmediate(function () {
-    const sample = "frida-rpc";
-    const result = nativeCall(Memory.allocUtf8String(sample));
-    console.log("[rpc] local test strlen('" + sample + "')=" + result);
 });
 `,
 		},
@@ -274,36 +335,41 @@ setImmediate(function () {
 			Name:        "Interceptor.replace 与 Writer",
 			Category:    "高阶 Patch",
 			Description: "用 Interceptor.replace 或 Arm64Writer 替换 native 函数入口。",
-			Source: `const moduleName = "libtarget.so";
+			Source: nativeModuleLoader + `const moduleName = "libtarget.so";
 const exportName = "target_function";
 const useArm64Writer = false;
 
-const mod = Process.getModuleByName(moduleName);
-const target = mod.getExportByName(exportName);
-console.log("[replace] target=" + moduleName + "!" + exportName + " @ " + target);
+hookNowOrOnLoad(moduleName, function (mod) {
+    try {
+        const target = mod.getExportByName(exportName);
+        console.log("[replace] target=" + moduleName + "!" + exportName + " @ " + target);
 
-if (useArm64Writer) {
-    if (Process.arch !== "arm64") {
-        throw new Error("Arm64Writer requires arm64 process, current=" + Process.arch);
+        if (useArm64Writer) {
+            if (Process.arch !== "arm64") {
+                throw new Error("Arm64Writer requires arm64 process, current=" + Process.arch);
+            }
+
+            const code = Memory.alloc(Process.pageSize);
+            Memory.patchCode(code, 64, function (codePtr) {
+                const writer = new Arm64Writer(codePtr, { pc: code });
+                writer.putMovRegU64("x0", 0);
+                writer.putRet();
+                writer.flush();
+            });
+            Interceptor.replace(target, code);
+            console.log("[replace] replaced with Arm64Writer thunk returning 0");
+        } else {
+            const replacement = new NativeCallback(function () {
+                console.log("[replace] replacement called");
+                return 0;
+            }, "int", []);
+            Interceptor.replace(target, replacement);
+            console.log("[replace] replaced with NativeCallback returning 0");
+        }
+    } catch (err) {
+        console.log("[replace] setup failed: " + err);
     }
-
-    const code = Memory.alloc(Process.pageSize);
-    Memory.patchCode(code, 64, function (codePtr) {
-        const writer = new Arm64Writer(codePtr, { pc: code });
-        writer.putMovRegU64("x0", 0);
-        writer.putRet();
-        writer.flush();
-    });
-    Interceptor.replace(target, code);
-    console.log("[replace] replaced with Arm64Writer thunk returning 0");
-} else {
-    const replacement = new NativeCallback(function () {
-        console.log("[replace] replacement called");
-        return 0;
-    }, "int", []);
-    Interceptor.replace(target, replacement);
-    console.log("[replace] replaced with NativeCallback returning 0");
-}
+});
 `,
 		},
 		{

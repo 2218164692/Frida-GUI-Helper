@@ -13,6 +13,9 @@ A Windows desktop helper for using Frida with Android devices. It wraps common A
 - Local toolchain priority: bundled `tools/` binaries are used before system `PATH`.
 - Built-in Frida Script Hub with beginner and advanced templates.
 - Import local `.js`, `.mjs`, or `.ts` Frida scripts and run them from the editor.
+- Native templates wait for target modules, including Spawn and delayed `.so` loading.
+- CodeShare scripts are loaded for review first and trusted by fingerprint only when run.
+- Session exits are synchronized to the UI and removed from the active session list.
 - Real-time stdout/stderr log console with filtering, clearing, and export.
 - Diagnostics for ADB, Frida CLI, device ABI, Root, server version, server process, and official `frida-ps -U` smoke test.
 
@@ -107,10 +110,15 @@ $env:GOMODCACHE="$PWD\.gomodcache"
 $env:GOPATH="$PWD\.gopath"
 go test ./...
 
+.\tools\check-version.ps1
+
 cd frontend
+npm ci
 npm run build
 cd ..
 ```
+
+The repository includes a Windows GitHub Actions workflow for version consistency, frontend builds, Go tests, and `go vet`. The root `VERSION` file is the release source of truth; keep `frontend/package.json` and `wails.json` synchronized when bumping it. CI rejects inconsistent version metadata.
 
 Run Wails development mode:
 

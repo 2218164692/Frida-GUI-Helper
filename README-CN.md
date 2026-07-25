@@ -13,6 +13,9 @@
 - 本地工具链优先：优先使用 `tools/` 中随软件提供的工具，再回退到系统 `PATH`。
 - 内置 Frida Script Hub，包含基础模板和高阶模板。
 - 支持导入本地 `.js`、`.mjs`、`.ts` Frida 脚本并在编辑器中运行。
+- Native 模板会等待目标模块加载，兼容 Spawn 和延迟加载的 `.so`。
+- CodeShare 脚本先进入编辑器供审查，仅在运行时确认并记录源码指纹。
+- Frida 会话退出后会实时同步到界面，不保留失效的活动会话。
 - 实时日志控制台，支持过滤、清空和导出。
 - 提供 ADB、Frida CLI、设备 ABI、Root、server 版本、server 进程、官方 `frida-ps -U` smoke test 等诊断操作。
 
@@ -105,10 +108,15 @@ $env:GOMODCACHE="$PWD\.gomodcache"
 $env:GOPATH="$PWD\.gopath"
 go test ./...
 
+.\tools\check-version.ps1
+
 cd frontend
+npm ci
 npm run build
 cd ..
 ```
+
+仓库包含 Windows GitHub Actions 工作流，会执行版本一致性检查、前端构建、Go 测试和 `go vet`。发布版本以根目录的 `VERSION` 为准；修改版本时需要同步更新 `frontend/package.json` 和 `wails.json`，CI 会阻止版本不一致的提交。
 
 启动 Wails 开发模式：
 

@@ -380,3 +380,11 @@ export function subscribeLogs(handler: (entry: LogEntry) => void): () => void {
   }
   return () => window.runtime?.EventsOff?.("log:new");
 }
+
+export function subscribeSessionUpdates(handler: (session: SessionInfo) => void): () => void {
+  const off = window.runtime?.EventsOn?.("session:updated", (session) => handler(session as SessionInfo));
+  if (typeof off === "function") {
+    return off;
+  }
+  return () => window.runtime?.EventsOff?.("session:updated");
+}

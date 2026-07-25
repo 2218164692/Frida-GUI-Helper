@@ -106,10 +106,14 @@ func (a *App) startup(ctx context.Context) {
 	a.logs.SetEmitter(func(entry logstream.Entry) {
 		wailsRuntime.EventsEmit(ctx, "log:new", entry)
 	})
+	a.frida.SetSessionEmitter(func(info frida.SessionInfo) {
+		wailsRuntime.EventsEmit(ctx, "session:updated", info)
+	})
 	a.addLog("info", "system", "应用已启动")
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	a.frida.SetSessionEmitter(nil)
 	a.frida.StopAll()
 	if a.cancel != nil {
 		a.cancel()

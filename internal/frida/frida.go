@@ -21,6 +21,7 @@ import (
 )
 
 type Logger func(level string, source string, message string)
+type SessionEmitter func(SessionInfo)
 
 type ToolStatus struct {
 	Name    string `json:"name"`
@@ -60,10 +61,17 @@ type session struct {
 }
 
 type Runner struct {
-	log      Logger
-	tools    *toolchain.Resolver
-	mu       sync.Mutex
-	sessions map[string]*session
+	log         Logger
+	tools       *toolchain.Resolver
+	mu          sync.Mutex
+	sessions    map[string]*session
+	sessionEmit SessionEmitter
+}
+
+func (r *Runner) SetSessionEmitter(emit SessionEmitter) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sessionEmit = emit
 }
 
 func NewRunner(log Logger, tools *toolchain.Resolver) *Runner {
@@ -182,6 +190,7 @@ func (r *Runner) RunScript(ctx context.Context, req RunRequest) (SessionInfo, er
 	}
 	r.mu.Unlock()
 
+	r.emitSession(info)
 	r.logf("info", "frida", "启动会话 %s: frida %s", sessionID, strings.Join(args, " "))
 	go r.stream(sessionID, "stdout", stdout, "info")
 	go r.stream(sessionID, "stderr", stderr, "error")
@@ -200,6 +209,7 @@ func (r *Runner) StopSession(sessionID string) error {
 	sess, ok := r.sessions[sessionID]
 	if ok {
 		delete(r.sessions, sessionID)
+		sess.info.Running = false
 	}
 	r.mu.Unlock()
 	if !ok {
@@ -212,6 +222,7 @@ func (r *Runner) StopSession(sessionID string) error {
 		_ = sess.cmd.Process.Kill()
 	}
 	_ = os.Remove(sess.scriptPath)
+	r.emitSession(sess.info)
 	r.logf("info", "frida", "已停止会话 %s", sessionID)
 	return nil
 }
@@ -240,22 +251,39 @@ func (r *Runner) wait(sessionID string, cmd *exec.Cmd, scriptPath string) {
 	err := cmd.Wait()
 
 	var stdin io.WriteCloser
+	var info SessionInfo
+	var finished bool
 	r.mu.Lock()
 	if sess, ok := r.sessions[sessionID]; ok {
 		sess.info.Running = false
 		stdin = sess.stdin
+		info = sess.info
+		finished = true
+		delete(r.sessions, sessionID)
 	}
 	r.mu.Unlock()
 	if stdin != nil {
 		_ = stdin.Close()
 	}
 	_ = os.Remove(scriptPath)
+	if finished {
+		r.emitSession(info)
+	}
 
 	if err != nil {
 		r.logf("error", "frida", "会话 %s 已退出: %v", sessionID, err)
 		return
 	}
 	r.logf("info", "frida", "会话 %s 已退出", sessionID)
+}
+
+func (r *Runner) emitSession(info SessionInfo) {
+	r.mu.Lock()
+	emit := r.sessionEmit
+	r.mu.Unlock()
+	if emit != nil {
+		emit(info)
+	}
 }
 
 func (r *Runner) stream(sessionID string, pipeName string, reader io.Reader, level string) {

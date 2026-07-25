@@ -2,7 +2,7 @@
   "$schema": "https://wails.io/schemas/config.v2.json",
   "name": "Frida-GUI-Helper",
   "outputfilename": "Frida-GUI-Helper",
-  "frontend:install": "npm install --cache .npm-cache",
+  "frontend:install": "npm ci --cache .npm-cache",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "http://127.0.0.1:5173",

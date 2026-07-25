@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   AlertTriangle,
   ChevronLeft,
@@ -29,10 +29,10 @@ import {
   Wrench,
   Usb
 } from "@lucide/vue";
-import ScriptEditor from "./components/ScriptEditor.vue";
 import {
   api,
   subscribeLogs,
+  subscribeSessionUpdates,
   type AndroidApp,
   type AndroidProcess,
   type CodeShareProject,
@@ -68,6 +68,8 @@ type ScriptEditorApi = {
   find: () => void;
   replace: (source: string) => void;
 };
+
+const ScriptEditor = defineAsyncComponent(() => import("./components/ScriptEditor.vue"));
 
 const views: Array<{ key: ViewKey; label: string; icon: unknown }> = [
   { key: "devices", label: "设备", icon: MonitorSmartphone },
@@ -126,8 +128,10 @@ const serverStatusBusy = ref(false);
 const lastDiagnostic = ref<DiagnosticFinding | null>(null);
 
 let unsubscribeLogs: () => void = () => {};
-let scriptEditor: ScriptEditorApi | null = null;
+let unsubscribeSessions: () => void = () => {};
+const scriptEditor = ref<ScriptEditorApi | null>(null);
 let serverStatusTimer: number | undefined;
+let serverStatusRequest = 0;
 
 const currentTitle = computed(() => views.find((view) => view.key === activeView.value)?.label ?? "");
 const selectedDevice = computed(() => devices.value.find((device) => device.serial === selectedSerial.value));
@@ -228,6 +232,16 @@ onMounted(async () => {
       lastDiagnostic.value = entry.diagnostic;
     }
   });
+  unsubscribeSessions = subscribeSessionUpdates((updated) => {
+    if (updated.running) {
+      const exists = sessions.value.some((session) => session.id === updated.id);
+      sessions.value = exists
+        ? sessions.value.map((session) => session.id === updated.id ? updated : session)
+        : [updated, ...sessions.value];
+      return;
+    }
+    sessions.value = sessions.value.filter((session) => session.id !== updated.id);
+  });
   await bootstrap();
   serverStatusTimer = window.setInterval(() => {
     if (selectedSerial.value && !serverStatusBusy.value) {
@@ -238,6 +252,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unsubscribeLogs();
+  unsubscribeSessions();
   if (serverStatusTimer !== undefined) {
     window.clearInterval(serverStatusTimer);
   }
@@ -258,13 +273,22 @@ async function bootstrap() {
 }
 
 async function refreshServerStatus(showError = true) {
-  if (!selectedSerial.value || serverStatusBusy.value) {
+  const serial = selectedSerial.value;
+  if (!serial) {
     return;
   }
+  const requestID = ++serverStatusRequest;
   serverStatusBusy.value = true;
   try {
-    serverStatus.value = await api.getFridaServerStatus(selectedSerial.value);
+    const status = await api.getFridaServerStatus(serial);
+    if (requestID !== serverStatusRequest || selectedSerial.value !== serial) {
+      return;
+    }
+    serverStatus.value = status;
   } catch (error) {
+    if (requestID !== serverStatusRequest || selectedSerial.value !== serial) {
+      return;
+    }
     serverStatus.value = {
       state: "unavailable",
       pid: "",
@@ -280,7 +304,9 @@ async function refreshServerStatus(showError = true) {
       notice.value = serverStatus.value.error;
     }
   } finally {
-    serverStatusBusy.value = false;
+    if (requestID === serverStatusRequest) {
+      serverStatusBusy.value = false;
+    }
   }
 }
 
@@ -393,7 +419,7 @@ function selectScript(script: ScriptTemplate) {
 }
 
 function onScriptEditorReady(apiRef: ScriptEditorApi) {
-  scriptEditor = apiRef;
+  scriptEditor.value = apiRef;
 }
 
 async function saveCurrentScript() {
@@ -469,7 +495,7 @@ function applyRuntimeVariables(source: string) {
 function applyVariablesToEditor() {
   const nextSource = applyRuntimeVariables(editorSource.value);
   editorSource.value = nextSource;
-  scriptEditor?.replace(nextSource);
+  scriptEditor.value?.replace(nextSource);
   appendLocalLog("info", "ui", "已将运行变量写入编辑器");
 }
 
@@ -500,29 +526,6 @@ async function loadCodeShareProject(summary: CodeShareProjectSummary) {
       appendLocalLog("warn", "codeshare", project.warning);
     }
 
-    if (project.trustState !== "trusted") {
-      const changed = project.trustState === "changed";
-      const origin = project.origin === "cache"
-        ? `当前源码来自 ${formatDateTime(project.cachedAt)} 的本地缓存。`
-        : "当前源码来自 Frida CodeShare 在线服务。";
-      const message = [
-        changed ? "该项目的源码已发生变化，需要重新确认。" : "这是首次载入该 CodeShare 项目。",
-        `项目：${project.name}`,
-        `作者：@${project.owner}`,
-        `SHA-256：${project.fingerprint}`,
-        origin,
-        "CodeShare 是社区脚本库。确认信任前请检查源码，仅在已授权目标上运行。",
-        "",
-        "是否信任当前指纹并载入编辑器？"
-      ].join("\n");
-      if (!window.confirm(message)) {
-        appendLocalLog("warn", "codeshare", `已取消信任 @${project.ref}`);
-        return;
-      }
-      await api.trustCodeShareProject(project.ref, project.fingerprint);
-      project.trustState = "trusted";
-    }
-
     const script: ScriptTemplate = {
       id: `codeshare:${project.ref}:${project.fingerprint}`,
       name: project.name,
@@ -533,8 +536,57 @@ async function loadCodeShareProject(summary: CodeShareProjectSummary) {
     scripts.value = [script, ...scripts.value.filter((item) => !item.id.startsWith(`codeshare:${project.ref}:`))];
     activeCodeShareProject.value = project;
     selectScript(script);
-    appendLocalLog("info", "codeshare", `已载入 @${project.ref}，SHA-256: ${project.fingerprint}`);
+    appendLocalLog(
+      project.trustState === "trusted" ? "info" : "warn",
+      "codeshare",
+      `已载入 @${project.ref} 供审查，SHA-256: ${project.fingerprint}`
+    );
   });
+}
+
+async function confirmCodeShareRun() {
+  const project = activeCodeShareProject.value;
+  if (!project) {
+    return true;
+  }
+
+  const modified = editorSource.value !== project.source;
+  if (modified) {
+    return window.confirm([
+      `CodeShare 脚本 @${project.ref} 已在本地修改。`,
+      "当前编辑器内容不再匹配已发布的 SHA-256 指纹。",
+      "请确认你已经审查修改后的源码，并且只在已授权目标上运行。",
+      "",
+      "是否继续注入？"
+    ].join("\n"));
+  }
+
+  if (project.trustState === "trusted") {
+    return true;
+  }
+
+  const changed = project.trustState === "changed";
+  const origin = project.origin === "cache"
+    ? `当前源码来自 ${formatDateTime(project.cachedAt)} 的本地缓存。`
+    : "当前源码来自 Frida CodeShare 在线服务。";
+  const confirmed = window.confirm([
+    changed ? "该项目的源码指纹已发生变化。" : "这是首次运行该 CodeShare 项目。",
+    `项目：${project.name}`,
+    `作者：@${project.owner}`,
+    `SHA-256：${project.fingerprint}`,
+    origin,
+    "确认前请先在编辑器中审查源码。",
+    "",
+    "是否信任当前指纹并注入？"
+  ].join("\n"));
+  if (!confirmed) {
+    return false;
+  }
+
+  await api.trustCodeShareProject(project.ref, project.fingerprint);
+  project.trustState = "trusted";
+  appendLocalLog("info", "codeshare", `已信任 @${project.ref}，SHA-256: ${project.fingerprint}`);
+  return true;
 }
 
 function previousCodeSharePage() {
@@ -640,6 +692,10 @@ async function spawnApp(app: AndroidApp) {
 
 async function runCurrentScript() {
   await withBusy("run-script", async () => {
+    if (!await confirmCodeShareRun()) {
+      appendLocalLog("warn", "codeshare", "已取消运行未信任的 CodeShare 脚本");
+      return;
+    }
     const source = applyRuntimeVariables(editorSource.value);
     const session = await api.runScript({
       deviceSerial: selectedSerial.value,
@@ -1235,6 +1291,9 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
             <div>
               <strong>@{{ activeCodeShareProject.owner }}</strong>
               <span>{{ activeCodeShareProject.likes }} 赞</span>
+              <span>{{ editorSource === activeCodeShareProject.source
+                ? (activeCodeShareProject.trustState === 'trusted' ? '指纹已信任' : '运行前需确认')
+                : '本地已修改' }}</span>
               <span v-if="activeCodeShareProject.fridaVersion">发布时 Frida {{ activeCodeShareProject.fridaVersion }}</span>
               <span class="source-badge" :class="activeCodeShareProject.origin">
                 {{ activeCodeShareProject.origin === 'cache' ? '缓存源码' : '在线源码' }}

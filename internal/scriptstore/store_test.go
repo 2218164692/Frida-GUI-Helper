@@ -1,6 +1,8 @@
 package scriptstore
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -58,5 +60,26 @@ func TestSaveListRecordRunAndDelete(t *testing.T) {
 	}
 	if len(listed) != 0 {
 		t.Fatalf("List() after Delete = %#v", listed)
+	}
+}
+
+func TestListRecoversInterruptedWriteFromBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scripts.json")
+	expected := []Script{{ID: "backup-1", Name: "Recovered", Source: "console.log('ok')"}}
+	data, err := json.Marshal(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".bak", data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewAt(path)
+	listed, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != expected[0].ID {
+		t.Fatalf("List() = %#v", listed)
 	}
 }

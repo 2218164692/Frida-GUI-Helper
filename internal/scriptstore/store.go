@@ -192,7 +192,10 @@ func (s *Store) RecordRun(id string) error {
 func (s *Store) read() ([]Script, error) {
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
-		return []Script{}, nil
+		data, err = os.ReadFile(s.path + ".bak")
+		if errors.Is(err, os.ErrNotExist) {
+			return []Script{}, nil
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("读取本地脚本库失败: %w", err)
@@ -211,16 +214,63 @@ func (s *Store) read() ([]Script, error) {
 }
 
 func (s *Store) write(scripts []Script) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("创建本地脚本库目录失败: %w", err)
 	}
 	data, err := json.MarshalIndent(scripts, "", "  ")
 	if err != nil {
 		return fmt.Errorf("序列化本地脚本库失败: %w", err)
 	}
-	if err := os.WriteFile(s.path, data, 0o600); err != nil {
+	if err := writeFileAtomic(s.path, data); err != nil {
 		return fmt.Errorf("写入本地脚本库失败: %w", err)
 	}
+	return nil
+}
+
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	temp, err := os.CreateTemp(dir, ".scripts-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+
+	if err := temp.Chmod(0o600); err != nil {
+		temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+
+	backupPath := path + ".bak"
+	hadOriginal := false
+	if _, err := os.Stat(path); err == nil {
+		_ = os.Remove(backupPath)
+		if err := os.Rename(path, backupPath); err != nil {
+			return err
+		}
+		hadOriginal = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	if err := os.Rename(tempPath, path); err != nil {
+		if hadOriginal {
+			_ = os.Rename(backupPath, path)
+		}
+		return err
+	}
+	_ = os.Remove(backupPath)
 	return nil
 }
 

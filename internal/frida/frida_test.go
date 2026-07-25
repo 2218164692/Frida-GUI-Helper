@@ -36,3 +36,19 @@ func TestBuildArgsForSpawnAndAttachFallback(t *testing.T) {
 		t.Fatalf("attach args = %#v, want %#v", attach, wantAttach)
 	}
 }
+
+func TestEmitSessionUsesLatestEmitter(t *testing.T) {
+	runner := NewRunner(nil, nil)
+	var received SessionInfo
+	runner.SetSessionEmitter(func(info SessionInfo) {
+		received = info
+	})
+
+	expected := SessionInfo{ID: "session-1", Running: false}
+	runner.emitSession(expected)
+	if received.ID != expected.ID || received.Running {
+		t.Fatalf("unexpected session event: %+v", received)
+	}
+
+	runner.SetSessionEmitter(nil)
+}

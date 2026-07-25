@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import * as monaco from "monaco-editor/esm/vs/editor/editor.api.js";
-import "monaco-editor/esm/vs/language/typescript/monaco.contribution";
-import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
+import * as monaco from "monaco-editor/editor/editor.api";
+import "monaco-editor/language/typescript/monaco.contribution";
+import editorWorker from "monaco-editor/editor/editor.worker?worker";
+import tsWorker from "monaco-editor/language/typescript/ts.worker?worker";
 
 const props = defineProps<{
   modelValue: string;

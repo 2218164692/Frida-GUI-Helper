@@ -19,7 +19,7 @@ import (
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-const AppVersion = "1.0.5"
+var AppVersion = strings.TrimSpace(versionText)
 
 type FridaServerStatus struct {
 	State         string `json:"state"`
