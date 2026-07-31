@@ -51,6 +51,58 @@ export interface ImportedScript {
   source: string;
 }
 
+export interface FridaRuntimeStatus {
+  latestVersion: string;
+  cacheDir: string;
+  host: ToolStatus;
+  python: ToolStatus;
+  server: ToolStatus;
+}
+
+export interface FridaRuntimeRequest {
+  deviceSerial: string;
+  version: string;
+}
+
+export interface FridaRuntimeProgress {
+  phase: "release" | "adb" | "python" | "host" | "server" | "runtime" | string;
+  stage: string;
+  version: string;
+  asset: string;
+  bytesDownloaded: number;
+  totalBytes: number;
+  percent: number;
+  message: string;
+  done: boolean;
+  error: string;
+}
+
+export interface UpdatePreferences {
+  autoCheckAppUpdates: boolean;
+  autoCheckFridaUpdates: boolean;
+  autoUpdateFrida: boolean;
+  notifyWhenUpdateAvailable: boolean;
+}
+
+export interface ComponentUpdateStatus {
+  component: "application" | "frida";
+  repository: string;
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  releaseUrl: string;
+  publishedAt: string;
+  checkedAt: string;
+  error: string;
+}
+
+export interface UpdateOverview {
+  application: ComponentUpdateStatus;
+  frida: ComponentUpdateStatus;
+  installDirectory: string;
+  fridaDirectory: string;
+}
+
 export interface LocalScript {
   id: string;
   name: string;
@@ -243,6 +295,65 @@ const mockBackend: BackendApp = {
       error: "Wails 后端未连接"
     } satisfies FridaServerStatus;
   },
+  async GetFridaRuntimeStatus() {
+    return {
+      latestVersion: "",
+      cacheDir: "",
+      host: { name: "frida", path: "", found: false, source: "", version: "", error: "Wails 后端未连接" },
+      python: { name: "python", path: "", found: false, source: "", version: "", error: "Wails 后端未连接" },
+      server: { name: "frida-server", path: "", found: false, source: "", version: "", error: "Wails 后端未连接" }
+    } satisfies FridaRuntimeStatus;
+  },
+  async PrepareFridaRuntime() {
+    return {
+      latestVersion: "",
+      cacheDir: "",
+      host: { name: "frida", path: "", found: false, source: "", version: "", error: "Wails 后端未连接" },
+      python: { name: "python", path: "", found: false, source: "", version: "", error: "Wails 后端未连接" },
+      server: { name: "frida-server", path: "", found: false, source: "", version: "", error: "Wails 后端未连接" }
+    } satisfies FridaRuntimeStatus;
+  },
+  async GetSettings() {
+    return {
+      autoCheckAppUpdates: true,
+      autoCheckFridaUpdates: true,
+      autoUpdateFrida: false,
+      notifyWhenUpdateAvailable: true
+    } satisfies UpdatePreferences;
+  },
+  async SaveSettings(...args: unknown[]) {
+    return args[0] as UpdatePreferences;
+  },
+  async GetUpdateOverview() {
+    const empty = (component: "application" | "frida"): ComponentUpdateStatus => ({
+      component,
+      repository: component === "application" ? "2218164692/Frida-GUI-Helper" : "frida/frida",
+      currentVersion: "",
+      latestVersion: "",
+      updateAvailable: false,
+      releaseUrl: "",
+      publishedAt: "",
+      checkedAt: "",
+      error: "Wails 后端未连接"
+    });
+    return {
+      application: empty("application"),
+      frida: empty("frida"),
+      installDirectory: "",
+      fridaDirectory: ""
+    } satisfies UpdateOverview;
+  },
+  async CheckApplicationUpdate() {
+    const overview = (await mockBackend.GetUpdateOverview()) as UpdateOverview;
+    return overview.application;
+  },
+  async CheckFridaUpdate() {
+    const overview = (await mockBackend.GetUpdateOverview()) as UpdateOverview;
+    return overview.frida;
+  },
+  async UpdateFridaComponent() {
+    return (await mockBackend.PrepareFridaRuntime()) as FridaRuntimeStatus;
+  },
   async ExportDiagnosticBundle() {
     return "";
   },
@@ -351,6 +462,15 @@ export const api = {
   listProcesses: (serial: string) => invokeArray<AndroidProcess>("ListProcesses", serial),
   startFridaServer: (request: FridaServerRequest) => invoke<void>("StartFridaServer", request),
   getFridaServerStatus: (serial: string) => invoke<FridaServerStatus>("GetFridaServerStatus", serial),
+  getFridaRuntimeStatus: () => invoke<FridaRuntimeStatus>("GetFridaRuntimeStatus"),
+  prepareFridaRuntime: (request: FridaRuntimeRequest) =>
+    invoke<FridaRuntimeStatus>("PrepareFridaRuntime", request),
+  getSettings: () => invoke<UpdatePreferences>("GetSettings"),
+  saveSettings: (settings: UpdatePreferences) => invoke<UpdatePreferences>("SaveSettings", settings),
+  getUpdateOverview: () => invoke<UpdateOverview>("GetUpdateOverview"),
+  checkApplicationUpdate: () => invoke<ComponentUpdateStatus>("CheckApplicationUpdate"),
+  checkFridaUpdate: () => invoke<ComponentUpdateStatus>("CheckFridaUpdate"),
+  updateFridaComponent: () => invoke<FridaRuntimeStatus>("UpdateFridaComponent"),
   exportDiagnosticBundle: (serial: string) => invoke<string>("ExportDiagnosticBundle", serial),
   listScripts: () => invokeArray<ScriptTemplate>("ListScripts"),
   importScriptFile: () => invoke<ImportedScript>("ImportScriptFile"),
@@ -387,4 +507,28 @@ export function subscribeSessionUpdates(handler: (session: SessionInfo) => void)
     return off;
   }
   return () => window.runtime?.EventsOff?.("session:updated");
+}
+
+export function subscribeRuntimeProgress(handler: (progress: FridaRuntimeProgress) => void): () => void {
+  const off = window.runtime?.EventsOn?.("runtime:progress", (progress) => handler(progress as FridaRuntimeProgress));
+  if (typeof off === "function") {
+    return off;
+  }
+  return () => window.runtime?.EventsOff?.("runtime:progress");
+}
+
+export function subscribeUpdateStatus(handler: (status: UpdateOverview) => void): () => void {
+  const off = window.runtime?.EventsOn?.("update:status", (status) => handler(status as UpdateOverview));
+  if (typeof off === "function") {
+    return off;
+  }
+  return () => window.runtime?.EventsOff?.("update:status");
+}
+
+export function subscribeUpdateNotification(handler: (message: string) => void): () => void {
+  const off = window.runtime?.EventsOn?.("update:notification", (message) => handler(String(message || "")));
+  if (typeof off === "function") {
+    return off;
+  }
+  return () => window.runtime?.EventsOff?.("update:notification");
 }

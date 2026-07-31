@@ -10,12 +10,14 @@ A Windows desktop helper for using Frida with Android devices. It wraps common A
 - Android USB device discovery through ADB.
 - App and process list with Attach and Spawn actions.
 - `frida-server` push/start/stop helpers for rooted Android devices.
-- Local toolchain priority: bundled `tools/` binaries are used before system `PATH`.
+- Isolated Frida toolchain: the desktop CLI, portable Python, and Android `frida-server` are loaded only from the installed `frida/` directory, never from a system Frida installation.
 - Built-in Frida Script Hub with beginner and advanced templates.
 - Import local `.js`, `.mjs`, or `.ts` Frida scripts and run them from the editor.
 - Native templates wait for target modules, including Spawn and delayed `.so` loading.
 - CodeShare scripts are loaded for review first and trusted by fingerprint only when run.
 - Session exits are synchronized to the UI and removed from the active session list.
+- The installer ships the latest official Frida available at build time plus Android servers for arm64, arm, x86_64, and x86. The Devices page validates and pushes the matching same-version server by ABI.
+- A Settings page checks application and official Frida updates and controls startup checks, Frida component auto-update, and update notifications.
 - Real-time stdout/stderr log console with filtering, clearing, and export.
 - Diagnostics for ADB, Frida CLI, device ABI, Root, server version, server process, and official `frida-ps -U` smoke test.
 
@@ -52,45 +54,42 @@ The desktop Frida CLI version and the Android `frida-server` version must match 
 
 ## Quick Start
 
-1. Download or build the application.
-2. Put optional bundled tools in the `tools/` directory shown below.
-3. Start `Frida-GUI-Helper.exe`.
+1. Download `Frida-GUI-Helper-v*-windows-amd64-setup.exe` from Releases.
+2. Run the installer and choose an installation directory.
+3. Start Frida GUI Helper from the Start menu or desktop shortcut.
 4. Select an Android device on the Devices page.
 5. Run `工具链诊断` and `Frida 官方 smoke test`.
 6. Start or push `frida-server` from the UI.
 7. Open the Processes page and choose an App or process.
 8. Open the Scripts page, select a template or import your own script, then run Attach or Spawn.
 
-## Bundled Tools Layout
+The installer contains one locked Frida component set. Its desktop CLI and all four Android servers come from the same official Frida release; GitHub's SHA-256 asset digest is verified when the bundle is built and recorded in the component manifest. The Devices page no longer downloads Frida on first use and never chooses a version from the user's machine, so a matching server can be pushed while offline. ADB may still come from bundled Platform-tools or `PATH`. USB debugging, ADB authorization, and root access are still required on the device.
 
-The app first searches for tools next to the executable and in the current project directory. If not found, it falls back to the system `PATH`.
+## Installed Component Layout
+
+Frida resolution is restricted to the managed installation directory:
 
 Recommended layout:
 
 ```text
-tools/
-  platform-tools/
-    adb.exe
-    AdbWinApi.dll
-    AdbWinUsbApi.dll
-
+Frida GUI Helper/
+  Frida-GUI-Helper.exe
+  uninstall.exe
   frida/
+    manifest.json
+    launcher.py
     frida.exe
     frida-ps.exe
     frida-ls-devices.exe
-
-  frida-server/
-    android-arm64/
-      frida-server
-    android-arm/
-      frida-server
-    android-x86/
-      frida-server
-    android-x86_64/
-      frida-server
+    python/
+    server/
+      android-arm64/frida-server
+      android-arm/frida-server
+      android-x86/frida-server
+      android-x86_64/frida-server
 ```
 
-If `frida-server` is left blank in the UI, the app tries to find the matching file in `tools/frida-server/` based on the device ABI.
+`manifest.json` is the version source of truth for both desktop and device-side components. A Frida update replaces the CLI and every ABI server as one same-version set.
 
 ## Development
 
@@ -126,14 +125,15 @@ Run Wails development mode:
 wails dev
 ```
 
-Build Windows executable:
+Prepare the latest Frida payload and build the Windows installer:
 
 ```powershell
 $env:GOFLAGS="-buildvcs=false"
-wails build
+.\tools\prepare-frida-bundle.ps1 -Version latest
+.\tools\build-installer.ps1 -Architecture amd64
 ```
 
-The packaged executable is generated under `build/bin/`.
+The build host also needs Wails v2.12 and NSIS. The release artifact is generated as `build/bin/Frida-GUI-Helper-v1.0.8-windows-amd64-setup.exe`.
 
 ## Troubleshooting
 

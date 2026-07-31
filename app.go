@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"frida-gui-helper/internal/adb"
@@ -17,22 +18,39 @@ import (
 	"frida-gui-helper/internal/logstream"
 	"frida-gui-helper/internal/operations"
 	"frida-gui-helper/internal/processutil"
+	runtimeenv "frida-gui-helper/internal/runtime"
 	"frida-gui-helper/internal/scripts"
 	"frida-gui-helper/internal/scriptstore"
+	appsettings "frida-gui-helper/internal/settings"
 	"frida-gui-helper/internal/toolchain"
+	"frida-gui-helper/internal/updater"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type App struct {
-	ctx       context.Context
-	logs      *logstream.Stream
-	adb       *adb.Runner
-	frida     *frida.Runner
-	codeShare *codeshare.Client
-	scripts   *scriptstore.Store
-	tools     *toolchain.Resolver
-	cancel    context.CancelFunc
+	ctx              context.Context
+	logs             *logstream.Stream
+	adb              *adb.Runner
+	frida            *frida.Runner
+	codeShare        *codeshare.Client
+	scripts          *scriptstore.Store
+	tools            *toolchain.Resolver
+	runtime          *runtimeenv.Manager
+	settings         *appsettings.Store
+	updates          *updater.Checker
+	updateMu         sync.RWMutex
+	fridaComponentMu sync.RWMutex
+	appUpdate        updater.ComponentStatus
+	fridaUpdate      updater.ComponentStatus
+	cancel           context.CancelFunc
+}
+
+type UpdateOverview struct {
+	Application      updater.ComponentStatus `json:"application"`
+	Frida            updater.ComponentStatus `json:"frida"`
+	InstallDirectory string                  `json:"installDirectory"`
+	FridaDirectory   string                  `json:"fridaDirectory"`
 }
 
 type SystemStatus struct {
@@ -56,6 +74,11 @@ type FridaServerRequest struct {
 	LocalPath    string `json:"localPath"`
 	RemotePath   string `json:"remotePath"`
 	ForceRestart bool   `json:"forceRestart"`
+}
+
+type FridaRuntimeRequest struct {
+	DeviceSerial string `json:"deviceSerial"`
+	Version      string `json:"version"`
 }
 
 type RunScriptRequest struct {
@@ -94,6 +117,23 @@ func NewApp() *App {
 	app.logs = logstream.New(1000, nil)
 	app.adb = adb.NewRunner(app.addLog, app.tools)
 	app.frida = frida.NewRunner(app.addLog, app.tools)
+	app.runtime = runtimeenv.NewManager(app.tools)
+	settingsStore, err := appsettings.New()
+	if err != nil {
+		settingsStore = appsettings.NewAt(filepath.Join(os.TempDir(), "Frida-GUI-Helper", "settings.json"))
+	}
+	app.settings = settingsStore
+	app.updates = updater.NewChecker()
+	app.appUpdate = updater.ComponentStatus{
+		Component:      updater.ComponentApplication,
+		Repository:     updater.ApplicationRepository,
+		CurrentVersion: applicationVersion(),
+	}
+	app.fridaUpdate = updater.ComponentStatus{
+		Component:      updater.ComponentFrida,
+		Repository:     updater.FridaRepository,
+		CurrentVersion: app.bundledFridaVersion(),
+	}
 	app.codeShare = codeshare.NewClient()
 	app.scripts = scriptstore.New()
 	return app
@@ -109,11 +149,16 @@ func (a *App) startup(ctx context.Context) {
 	a.frida.SetSessionEmitter(func(info frida.SessionInfo) {
 		wailsRuntime.EventsEmit(ctx, "session:updated", info)
 	})
+	a.runtime.SetProgressEmitter(func(progress runtimeenv.Progress) {
+		wailsRuntime.EventsEmit(ctx, "runtime:progress", progress)
+	})
 	a.addLog("info", "system", "应用已启动")
+	go a.runAutomaticUpdateChecks(appCtx)
 }
 
 func (a *App) shutdown(ctx context.Context) {
 	a.frida.SetSessionEmitter(nil)
+	a.runtime.SetProgressEmitter(nil)
 	a.frida.StopAll()
 	if a.cancel != nil {
 		a.cancel()
@@ -124,10 +169,11 @@ func (a *App) GetSystemStatus() SystemStatus {
 	ctx, cancel := a.withTimeout(8 * time.Second)
 	defer cancel()
 
+	bundled := a.runtime.BundledStatus(ctx, "")
 	return SystemStatus{
 		ADB:         a.adb.Status(ctx),
 		Frida:       a.frida.Status(ctx),
-		Python:      checkTool(ctx, "python", "--version"),
+		Python:      ToolStatus(bundled.Python),
 		GeneratedAt: time.Now().Format(time.RFC3339),
 	}
 }
@@ -160,19 +206,247 @@ func (a *App) StartFridaServer(req FridaServerRequest) error {
 	if strings.TrimSpace(req.DeviceSerial) == "" {
 		return errors.New("请先选择 Android 设备")
 	}
+	if !a.fridaComponentMu.TryRLock() {
+		return errors.New("Frida 组件正在更新，请稍后再启动 frida-server")
+	}
+	defer a.fridaComponentMu.RUnlock()
 	ctx, cancel := a.withTimeout(60 * time.Second)
 	defer cancel()
+	var expectedVersion string
+	req.LocalPath, expectedVersion = a.findBundledFridaServer(ctx, req.DeviceSerial)
 	if strings.TrimSpace(req.LocalPath) == "" {
-		if localPath := a.findBundledFridaServer(ctx, req.DeviceSerial); localPath != "" {
-			req.LocalPath = localPath
-		}
+		return errors.New("没有找到与设备 ABI 匹配的安装包内置 frida-server")
 	}
 	return a.adb.StartFridaServer(ctx, adb.FridaServerRequest{
-		DeviceSerial: req.DeviceSerial,
-		LocalPath:    req.LocalPath,
-		RemotePath:   req.RemotePath,
-		ForceRestart: req.ForceRestart,
+		DeviceSerial:    req.DeviceSerial,
+		LocalPath:       req.LocalPath,
+		RemotePath:      req.RemotePath,
+		ForceRestart:    true,
+		ExpectedVersion: expectedVersion,
 	})
+}
+
+func (a *App) GetFridaRuntimeStatus() runtimeenv.Status {
+	ctx, cancel := a.withTimeout(8 * time.Second)
+	defer cancel()
+	return a.runtime.BundledStatus(ctx, "")
+}
+
+func (a *App) PrepareFridaRuntime(req FridaRuntimeRequest) (runtimeenv.Status, error) {
+	serial := strings.TrimSpace(req.DeviceSerial)
+	if serial == "" {
+		return runtimeenv.Status{}, errors.New("请先选择 Android 设备")
+	}
+	if !a.fridaComponentMu.TryRLock() {
+		return runtimeenv.Status{}, errors.New("Frida 组件正在更新，请稍后再配置设备")
+	}
+	defer a.fridaComponentMu.RUnlock()
+	ctx, cancel := a.withTimeout(8 * time.Minute)
+	defer cancel()
+	if _, err := a.runtime.EnsureADB(ctx); err != nil {
+		a.addLog("error", "runtime", err.Error())
+		return runtimeenv.Status{}, err
+	}
+	abi, err := a.adb.ShellQuiet(ctx, serial, "getprop", "ro.product.cpu.abilist")
+	if err != nil || strings.TrimSpace(abi) == "" {
+		abi, err = a.adb.ShellQuiet(ctx, serial, "getprop", "ro.product.cpu.abi")
+	}
+	if err != nil || strings.TrimSpace(abi) == "" {
+		return runtimeenv.Status{}, fmt.Errorf("读取 Android ABI 失败: %w", err)
+	}
+	a.addLog("info", "runtime", fmt.Sprintf("校验安装包内置 Frida，设备 ABI: %s", strings.TrimSpace(abi)))
+	status, prepareErr := a.runtime.PrepareBundled(ctx, strings.TrimSpace(abi))
+	if prepareErr != nil {
+		a.addLog("error", "runtime", prepareErr.Error())
+		return status, prepareErr
+	}
+	if err := a.adb.StartFridaServer(ctx, adb.FridaServerRequest{
+		DeviceSerial:    serial,
+		LocalPath:       status.Server.Path,
+		RemotePath:      adb.DefaultFridaServerRemotePath,
+		ForceRestart:    true,
+		ExpectedVersion: status.LatestVersion,
+	}); err != nil {
+		a.addLog("error", "runtime", "Frida server 推送或启动失败: "+err.Error())
+		return status, err
+	}
+	status.Server.Source = "managed + device"
+	a.addLog("info", "runtime", fmt.Sprintf("内置 Frida %s 已推送并启动: %s", status.LatestVersion, status.Server.Path))
+	return status, nil
+}
+
+func (a *App) GetSettings() (appsettings.Settings, error) {
+	if a.settings == nil {
+		return appsettings.Settings{}, errors.New("设置存储未初始化")
+	}
+	return a.settings.Load()
+}
+
+func (a *App) SaveSettings(value appsettings.Settings) (appsettings.Settings, error) {
+	if a.settings == nil {
+		return appsettings.Settings{}, errors.New("设置存储未初始化")
+	}
+	if err := a.settings.Save(value); err != nil {
+		a.addLog("error", "settings", "保存设置失败: "+err.Error())
+		return appsettings.Settings{}, err
+	}
+	a.addLog("info", "settings", "更新设置已保存")
+	return value, nil
+}
+
+func (a *App) GetUpdateOverview() UpdateOverview {
+	a.updateMu.RLock()
+	application := a.appUpdate
+	fridaStatus := a.fridaUpdate
+	a.updateMu.RUnlock()
+	application.CurrentVersion = applicationVersion()
+	fridaStatus.CurrentVersion = a.bundledFridaVersion()
+	return UpdateOverview{
+		Application:      application,
+		Frida:            fridaStatus,
+		InstallDirectory: installationDirectory(),
+		FridaDirectory:   a.runtime.BundleRoot(),
+	}
+}
+
+func (a *App) CheckApplicationUpdate() (updater.ComponentStatus, error) {
+	ctx, cancel := a.withTimeout(20 * time.Second)
+	defer cancel()
+	status, err := a.updates.CheckApplication(ctx, applicationVersion())
+	a.updateMu.Lock()
+	a.appUpdate = status
+	a.updateMu.Unlock()
+	a.emitUpdateOverview()
+	if err != nil {
+		a.addLog("warn", "update", "软件更新检查失败: "+err.Error())
+		return status, err
+	}
+	if status.UpdateAvailable {
+		a.addLog("info", "update", fmt.Sprintf("发现 Frida GUI Helper %s", status.LatestVersion))
+	}
+	return status, nil
+}
+
+func (a *App) CheckFridaUpdate() (updater.ComponentStatus, error) {
+	ctx, cancel := a.withTimeout(20 * time.Second)
+	defer cancel()
+	status, err := a.updates.CheckFrida(ctx, a.bundledFridaVersion())
+	a.updateMu.Lock()
+	a.fridaUpdate = status
+	a.updateMu.Unlock()
+	a.emitUpdateOverview()
+	if err != nil {
+		a.addLog("warn", "update", "Frida 更新检查失败: "+err.Error())
+		return status, err
+	}
+	if status.UpdateAvailable {
+		a.addLog("info", "update", fmt.Sprintf("发现官方 Frida %s", status.LatestVersion))
+	}
+	return status, nil
+}
+
+func (a *App) UpdateFridaComponent() (runtimeenv.Status, error) {
+	if len(a.frida.ListSessions()) > 0 {
+		return runtimeenv.Status{}, errors.New("请先停止全部 Frida 脚本会话，再更新组件")
+	}
+	latest, err := a.CheckFridaUpdate()
+	if err != nil {
+		return runtimeenv.Status{}, err
+	}
+	if strings.TrimSpace(latest.LatestVersion) == "" {
+		return runtimeenv.Status{}, errors.New("没有获取到可用的 Frida 版本")
+	}
+	if !a.fridaComponentMu.TryLock() {
+		return runtimeenv.Status{}, errors.New("Frida 组件正在使用或已有更新任务正在运行")
+	}
+	defer a.fridaComponentMu.Unlock()
+	if len(a.frida.ListSessions()) > 0 {
+		return runtimeenv.Status{}, errors.New("请先停止全部 Frida 脚本会话，再更新组件")
+	}
+	ctx, cancel := a.withTimeout(20 * time.Minute)
+	defer cancel()
+	a.addLog("info", "update", "开始更新内置 Frida "+latest.LatestVersion)
+	manifest, err := a.runtime.InstallBundle(ctx, latest.LatestVersion)
+	if err != nil {
+		a.addLog("error", "update", "Frida 组件更新失败: "+err.Error())
+		return a.runtime.BundledStatus(ctx, ""), err
+	}
+	status := a.runtime.BundledStatus(ctx, "")
+	if !status.Host.Found || !status.Server.Found {
+		err := errors.New("Frida 组件下载完成，但完整性检查未通过")
+		a.addLog("error", "update", err.Error())
+		return status, err
+	}
+	latest.CurrentVersion = manifest.Version
+	latest.LatestVersion = manifest.Version
+	latest.UpdateAvailable = false
+	latest.Error = ""
+	a.updateMu.Lock()
+	a.fridaUpdate = latest
+	a.updateMu.Unlock()
+	a.emitUpdateOverview()
+	a.addLog("info", "update", fmt.Sprintf("内置 Frida 已更新到 %s；下次启动守护时会推送同版本 server", manifest.Version))
+	return status, nil
+}
+
+func (a *App) runAutomaticUpdateChecks(ctx context.Context) {
+	preferences, err := a.GetSettings()
+	if err != nil {
+		a.addLog("warn", "settings", "读取更新设置失败: "+err.Error())
+		return
+	}
+	var notices []string
+	if preferences.AutoCheckAppUpdates && ctx.Err() == nil {
+		status, _ := a.CheckApplicationUpdate()
+		if status.UpdateAvailable {
+			notices = append(notices, "Frida GUI Helper "+status.LatestVersion+" 已发布")
+		}
+	}
+	var fridaStatus updater.ComponentStatus
+	if (preferences.AutoCheckFridaUpdates || preferences.AutoUpdateFrida) && ctx.Err() == nil {
+		fridaStatus, _ = a.CheckFridaUpdate()
+		if fridaStatus.UpdateAvailable {
+			notices = append(notices, "官方 Frida "+fridaStatus.LatestVersion+" 可用")
+		}
+	}
+	if preferences.NotifyWhenAvailable && len(notices) > 0 && a.ctx != nil {
+		wailsRuntime.EventsEmit(a.ctx, "update:notification", strings.Join(notices, "；"))
+	}
+	if preferences.AutoUpdateFrida && fridaStatus.UpdateAvailable && ctx.Err() == nil {
+		_, _ = a.UpdateFridaComponent()
+	}
+}
+
+func (a *App) emitUpdateOverview() {
+	if a.ctx != nil {
+		wailsRuntime.EventsEmit(a.ctx, "update:status", a.GetUpdateOverview())
+	}
+}
+
+func (a *App) bundledFridaVersion() string {
+	manifest, err := a.runtime.ReadBundleManifest()
+	if err != nil {
+		return ""
+	}
+	return manifest.Version
+}
+
+func applicationVersion() string {
+	version := strings.TrimSpace(strings.TrimPrefix(versionText, "v"))
+	if version == "" {
+		return "0.0.0"
+	}
+	return version
+}
+
+func installationDirectory() string {
+	if executable, err := os.Executable(); err == nil {
+		return filepath.Dir(executable)
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return ""
 }
 
 func (a *App) ListScripts() []scripts.Template {
@@ -365,12 +639,17 @@ func (a *App) RunOperation(req RunOperationRequest) error {
 	case "frida-compat-report":
 		return a.fridaCompatibilityReport(ctx, serial)
 	case "frida-server-start":
-		localPath := a.findBundledFridaServer(ctx, serial)
+		if !a.fridaComponentMu.TryRLock() {
+			return errors.New("Frida 组件正在更新，请稍后再启动 frida-server")
+		}
+		defer a.fridaComponentMu.RUnlock()
+		localPath, expectedVersion := a.findBundledFridaServer(ctx, serial)
 		err := a.adb.StartFridaServer(ctx, adb.FridaServerRequest{
-			DeviceSerial: serial,
-			LocalPath:    localPath,
-			RemotePath:   adb.DefaultFridaServerRemotePath,
-			ForceRestart: false,
+			DeviceSerial:    serial,
+			LocalPath:       localPath,
+			RemotePath:      adb.DefaultFridaServerRemotePath,
+			ForceRestart:    true,
+			ExpectedVersion: expectedVersion,
 		})
 		if err != nil {
 			a.logCommandResult("frida-server", "Start", "", err)
@@ -436,6 +715,10 @@ func (a *App) RunScript(req RunScriptRequest) (frida.SessionInfo, error) {
 	if strings.TrimSpace(req.ScriptSource) == "" {
 		return frida.SessionInfo{}, errors.New("脚本内容不能为空")
 	}
+	if !a.fridaComponentMu.TryRLock() {
+		return frida.SessionInfo{}, errors.New("Frida 组件正在更新，请稍后再运行脚本")
+	}
+	defer a.fridaComponentMu.RUnlock()
 
 	return a.frida.RunScript(a.baseContext(), frida.RunRequest{
 		DeviceSerial: req.DeviceSerial,
@@ -587,6 +870,9 @@ func (a *App) fridaCompatibilityReport(ctx context.Context, serial string) error
 
 func (a *App) runCLI(ctx context.Context, name string, args ...string) error {
 	tool := a.tools.FindExecutable(name)
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), "frida") {
+		tool = a.tools.FindFridaTool(name)
+	}
 	if !tool.Found {
 		err := fmt.Errorf("%s not found: %s", name, tool.Error)
 		a.logCommandResult(name, name+" "+strings.Join(args, " "), "", err)
@@ -602,6 +888,9 @@ func (a *App) toolchainReport(ctx context.Context, serial string) error {
 	a.addLog("info", "toolchain", "工具查找目录: "+strings.Join(a.tools.BaseDirs(), " | "))
 	for _, name := range []string{"adb", "frida", "frida-ps", "frida-ls-devices"} {
 		tool := a.tools.FindExecutable(name)
+		if strings.HasPrefix(name, "frida") {
+			tool = a.tools.FindFridaTool(name)
+		}
 		if !tool.Found {
 			a.addLog("error", "toolchain", name+": "+tool.Error)
 			continue
@@ -610,27 +899,25 @@ func (a *App) toolchainReport(ctx context.Context, serial string) error {
 	}
 	if serial != "" {
 		abi, _ := a.adb.ShellCommandQuiet(ctx, serial, "getprop ro.product.cpu.abi")
-		version := a.frida.Status(ctx).Version
-		server := a.tools.FindFridaServer(version, strings.TrimSpace(abi))
-		if server.Found {
-			a.addLog("info", "toolchain", fmt.Sprintf("frida-server[%s/%s]: %s", version, strings.TrimSpace(abi), server.Path))
+		status := a.runtime.BundledStatus(ctx, strings.TrimSpace(abi))
+		if status.Server.Found {
+			a.addLog("info", "toolchain", fmt.Sprintf("frida-server[%s/%s]: %s", status.LatestVersion, strings.TrimSpace(abi), status.Server.Path))
 		} else {
-			a.addLog("warn", "toolchain", server.Error)
+			a.addLog("warn", "toolchain", status.Server.Error)
 		}
 	}
 	return nil
 }
 
-func (a *App) findBundledFridaServer(ctx context.Context, serial string) string {
+func (a *App) findBundledFridaServer(ctx context.Context, serial string) (string, string) {
 	abi, _ := a.adb.ShellCommandQuiet(ctx, serial, "getprop ro.product.cpu.abi")
-	version := a.frida.Status(ctx).Version
-	server := a.tools.FindFridaServer(version, strings.TrimSpace(abi))
-	if !server.Found {
-		a.addLog("warn", "toolchain", server.Error)
-		return ""
+	status := a.runtime.BundledStatus(ctx, strings.TrimSpace(abi))
+	if !status.Server.Found {
+		a.addLog("warn", "toolchain", status.Server.Error)
+		return "", status.LatestVersion
 	}
-	a.addLog("info", "toolchain", "使用内置 frida-server: "+server.Path)
-	return server.Path
+	a.addLog("info", "toolchain", fmt.Sprintf("使用内置 Frida %s server: %s", status.LatestVersion, status.Server.Path))
+	return status.Server.Path, status.LatestVersion
 }
 
 func requiresDevice(id string) bool {
@@ -640,32 +927,4 @@ func requiresDevice(id string) bool {
 		}
 	}
 	return true
-}
-
-func checkTool(ctx context.Context, name string, versionArg string) ToolStatus {
-	status := ToolStatus{Name: name}
-	resolver := toolchain.NewResolver()
-	tool := resolver.FindExecutable(name)
-	if !tool.Found {
-		status.Error = tool.Error
-		return status
-	}
-	status.Found = true
-	status.Path = tool.Path
-	status.Source = tool.Source
-
-	cmdCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
-	defer cancel()
-
-	cmd := processutil.HideWindow(exec.CommandContext(cmdCtx, tool.Path, versionArg))
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		status.Error = strings.TrimSpace(string(output))
-		if status.Error == "" {
-			status.Error = err.Error()
-		}
-		return status
-	}
-	status.Version = strings.TrimSpace(string(output))
-	return status
 }

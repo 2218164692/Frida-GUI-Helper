@@ -1,15 +1,15 @@
 export namespace adb {
-	
+
 	export class AndroidApp {
 	    package: string;
 	    path: string;
 	    name: string;
 	    system: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new AndroidApp(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.package = source["package"];
@@ -25,11 +25,11 @@ export namespace adb {
 	    product: string;
 	    transportId: string;
 	    isAuthorized: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Device(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.serial = source["serial"];
@@ -45,11 +45,11 @@ export namespace adb {
 	    user: string;
 	    name: string;
 	    package: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Process(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.pid = source["pid"];
@@ -65,11 +65,11 @@ export namespace adb {
 	    source: string;
 	    version: string;
 	    error: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ToolStatus(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -84,7 +84,7 @@ export namespace adb {
 }
 
 export namespace codeshare {
-	
+
 	export class Project {
 	    ref: string;
 	    id: string;
@@ -101,11 +101,11 @@ export namespace codeshare {
 	    origin: string;
 	    cachedAt: string;
 	    warning: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Project(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ref = source["ref"];
@@ -134,11 +134,11 @@ export namespace codeshare {
 	    likes: number;
 	    views: string;
 	    url: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ProjectSummary(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ref = source["ref"];
@@ -159,11 +159,11 @@ export namespace codeshare {
 	    source: string;
 	    cachedAt: string;
 	    warning: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SearchResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.items = this.convertValues(source["items"], ProjectSummary);
@@ -174,7 +174,7 @@ export namespace codeshare {
 	        this.cachedAt = source["cachedAt"];
 	        this.warning = source["warning"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -224,7 +224,7 @@ export namespace diagnostics {
 }
 
 export namespace frida {
-	
+
 	export class SessionInfo {
 	    id: string;
 	    deviceSerial: string;
@@ -234,11 +234,11 @@ export namespace frida {
 	    scriptName: string;
 	    startedAt: string;
 	    running: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -258,11 +258,11 @@ export namespace frida {
 	    source: string;
 	    version: string;
 	    error: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ToolStatus(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -277,18 +277,18 @@ export namespace frida {
 }
 
 export namespace logstream {
-	
+
 	export class Entry {
 	    time: string;
 	    level: string;
 	    source: string;
 	    message: string;
 	    diagnostic?: diagnostics.Finding;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Entry(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.time = source["time"];
@@ -320,17 +320,31 @@ export namespace logstream {
 }
 
 export namespace main {
-	
+
+	export class FridaRuntimeRequest {
+	    deviceSerial: string;
+	    version: string;
+
+	    static createFrom(source: any = {}) {
+	        return new FridaRuntimeRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deviceSerial = source["deviceSerial"];
+	        this.version = source["version"];
+	    }
+	}
 	export class FridaServerRequest {
 	    deviceSerial: string;
 	    localPath: string;
 	    remotePath: string;
 	    forceRestart: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FridaServerRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.deviceSerial = source["deviceSerial"];
@@ -371,11 +385,11 @@ export namespace main {
 	    name: string;
 	    path: string;
 	    source: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ImportedScript(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -386,11 +400,11 @@ export namespace main {
 	export class RunOperationRequest {
 	    id: string;
 	    deviceSerial: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new RunOperationRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -404,11 +418,11 @@ export namespace main {
 	    target: string;
 	    scriptName: string;
 	    scriptSource: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new RunScriptRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.deviceSerial = source["deviceSerial"];
@@ -427,11 +441,11 @@ export namespace main {
 	    favorite: boolean;
 	    source: string;
 	    origin: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SaveLocalScriptRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -450,11 +464,11 @@ export namespace main {
 	    source: string;
 	    version: string;
 	    error: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ToolStatus(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -470,11 +484,11 @@ export namespace main {
 	    frida: frida.ToolStatus;
 	    python: ToolStatus;
 	    generatedAt: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new SystemStatus(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.adb = this.convertValues(source["adb"], adb.ToolStatus);
@@ -482,7 +496,44 @@ export namespace main {
 	        this.python = this.convertValues(source["python"], ToolStatus);
 	        this.generatedAt = source["generatedAt"];
 	    }
-	
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+	export class UpdateOverview {
+	    application: updater.ComponentStatus;
+	    frida: updater.ComponentStatus;
+	    installDirectory: string;
+	    fridaDirectory: string;
+
+	    static createFrom(source: any = {}) {
+	        return new UpdateOverview(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.application = this.convertValues(source["application"], updater.ComponentStatus);
+	        this.frida = this.convertValues(source["frida"], updater.ComponentStatus);
+	        this.installDirectory = source["installDirectory"];
+	        this.fridaDirectory = source["fridaDirectory"];
+	    }
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -505,18 +556,18 @@ export namespace main {
 }
 
 export namespace operations {
-	
+
 	export class Template {
 	    id: string;
 	    name: string;
 	    category: string;
 	    description: string;
 	    requiresDevice: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Template(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -529,19 +580,84 @@ export namespace operations {
 
 }
 
+export namespace runtime {
+
+	export class ToolStatus {
+	    name: string;
+	    path: string;
+	    found: boolean;
+	    source: string;
+	    version: string;
+	    error: string;
+
+	    static createFrom(source: any = {}) {
+	        return new ToolStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.path = source["path"];
+	        this.found = source["found"];
+	        this.source = source["source"];
+	        this.version = source["version"];
+	        this.error = source["error"];
+	    }
+	}
+	export class Status {
+	    latestVersion: string;
+	    cacheDir: string;
+	    host: ToolStatus;
+	    python: ToolStatus;
+	    server: ToolStatus;
+
+	    static createFrom(source: any = {}) {
+	        return new Status(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.latestVersion = source["latestVersion"];
+	        this.cacheDir = source["cacheDir"];
+	        this.host = this.convertValues(source["host"], ToolStatus);
+	        this.python = this.convertValues(source["python"], ToolStatus);
+	        this.server = this.convertValues(source["server"], ToolStatus);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace scripts {
-	
+
 	export class Template {
 	    id: string;
 	    name: string;
 	    category: string;
 	    description: string;
 	    source: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Template(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -555,7 +671,7 @@ export namespace scripts {
 }
 
 export namespace scriptstore {
-	
+
 	export class Script {
 	    id: string;
 	    name: string;
@@ -567,11 +683,11 @@ export namespace scriptstore {
 	    createdAt: string;
 	    updatedAt: string;
 	    lastUsedAt: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Script(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -584,6 +700,62 @@ export namespace scriptstore {
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
 	        this.lastUsedAt = source["lastUsedAt"];
+	    }
+	}
+
+}
+
+export namespace settings {
+
+	export class Settings {
+	    autoCheckAppUpdates: boolean;
+	    autoCheckFridaUpdates: boolean;
+	    autoUpdateFrida: boolean;
+	    notifyWhenUpdateAvailable: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new Settings(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.autoCheckAppUpdates = source["autoCheckAppUpdates"];
+	        this.autoCheckFridaUpdates = source["autoCheckFridaUpdates"];
+	        this.autoUpdateFrida = source["autoUpdateFrida"];
+	        this.notifyWhenUpdateAvailable = source["notifyWhenUpdateAvailable"];
+	    }
+	}
+
+}
+
+export namespace updater {
+
+	export class ComponentStatus {
+	    component: string;
+	    repository: string;
+	    currentVersion: string;
+	    latestVersion: string;
+	    updateAvailable: boolean;
+	    releaseUrl: string;
+	    publishedAt: string;
+	    checkedAt: string;
+	    error?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new ComponentStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.component = source["component"];
+	        this.repository = source["repository"];
+	        this.currentVersion = source["currentVersion"];
+	        this.latestVersion = source["latestVersion"];
+	        this.updateAvailable = source["updateAvailable"];
+	        this.releaseUrl = source["releaseUrl"];
+	        this.publishedAt = source["publishedAt"];
+	        this.checkedAt = source["checkedAt"];
+	        this.error = source["error"];
 	    }
 	}
 

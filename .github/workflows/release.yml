@@ -1,0 +1,104 @@
+name: Release Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Verify version metadata
+        shell: pwsh
+        run: ./tools/check-version.ps1
+
+      - name: Verify tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $expected = "v$((Get-Content VERSION -Raw).Trim())"
+          if ("${{ github.ref_name }}" -ne $expected) {
+            throw "Tag ${{ github.ref_name }} does not match $expected"
+          }
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Test source
+        shell: pwsh
+        run: |
+          npm --prefix frontend run build
+          go test ./...
+          go vet ./...
+
+      - name: Install Wails and NSIS
+        shell: pwsh
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+          choco install nsis -y --no-progress
+
+      - name: Prepare locked Frida component
+        shell: pwsh
+        run: |
+          $fridaVersion = (Get-Content FRIDA_VERSION -Raw).Trim()
+          ./tools/prepare-frida-bundle.ps1 -Version $fridaVersion
+
+      - name: Build installer
+        shell: pwsh
+        run: ./tools/build-installer.ps1 -Architecture amd64
+
+      - name: Generate checksum
+        id: artifact
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $installer = "build/bin/Frida-GUI-Helper-v$version-windows-amd64-setup.exe"
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          New-Item -ItemType Directory -Path release -Force | Out-Null
+          "$hash *$(Split-Path -Leaf $installer)" | Set-Content -LiteralPath release/SHA256SUMS -Encoding ascii
+          $notesTemplate = ".github/release-notes/v$version.md"
+          if (-not (Test-Path -LiteralPath $notesTemplate -PathType Leaf)) {
+            throw "Missing release notes template: $notesTemplate"
+          }
+          $notes = (Get-Content -LiteralPath $notesTemplate -Raw).Replace("{{SHA256}}", $hash)
+          $notes | Set-Content -LiteralPath release/RELEASE_NOTES.md -Encoding utf8
+          "installer=$installer" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Frida-GUI-Helper-Windows-Installer
+          path: |
+            ${{ steps.artifact.outputs.installer }}
+            release/SHA256SUMS
+            release/RELEASE_NOTES.md
+
+      - name: Upload tag release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Frida GUI Helper ${{ github.ref_name }}
+          body_path: release/RELEASE_NOTES.md
+          files: |
+            ${{ steps.artifact.outputs.installer }}
+            release/SHA256SUMS

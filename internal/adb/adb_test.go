@@ -92,3 +92,48 @@ func TestFridaServerPushPathForDirectory(t *testing.T) {
 		t.Fatalf("file path: got %q err=%v", got, err)
 	}
 }
+
+func TestNormalizeFridaServerVersion(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "plain", input: "17.16.4", want: "17.16.4"},
+		{name: "prefixed and padded", input: "  v17.16.4\r\n", want: "17.16.4"},
+		{name: "first non-empty line", input: "\n\nV17.16.4\nignored", want: "17.16.4"},
+		{name: "empty", input: " \r\n ", want: ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := normalizeFridaServerVersion(test.input); got != test.want {
+				t.Fatalf("normalizeFridaServerVersion(%q) = %q, want %q", test.input, got, test.want)
+			}
+		})
+	}
+}
+
+func TestRequireFridaServerVersion(t *testing.T) {
+	if err := requireFridaServerVersion("16.5.5", ""); err != nil {
+		t.Fatalf("empty expected version must preserve compatibility: %v", err)
+	}
+	if err := requireFridaServerVersion("17.16.4\n", "v17.16.4"); err != nil {
+		t.Fatalf("equivalent versions must match: %v", err)
+	}
+	if err := requireFridaServerVersion("17.16.3", "17.16.4"); err == nil {
+		t.Fatal("expected mismatched versions to fail")
+	}
+}
+
+func TestFridaServerVersionsEqualRejectsUnknownVersions(t *testing.T) {
+	if fridaServerVersionsEqual("", "17.16.4") {
+		t.Fatal("empty actual version must not match")
+	}
+	if fridaServerVersionsEqual("17.16.4", "") {
+		t.Fatal("empty expected version must not be treated as a proven match")
+	}
+	if !fridaServerVersionsEqual("V17.16.4", "17.16.4") {
+		t.Fatal("normalized versions should match")
+	}
+}

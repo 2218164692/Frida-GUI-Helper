@@ -9,6 +9,7 @@ import {
   Cpu,
   Database,
   Download,
+  ExternalLink,
   FileCode2,
   ListTree,
   MonitorSmartphone,
@@ -19,6 +20,7 @@ import {
   Search,
   Send,
   Server,
+  Settings,
   ShieldCheck,
   Square,
   Star,
@@ -29,17 +31,24 @@ import {
   Wrench,
   Usb
 } from "@lucide/vue";
+import { BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import {
   api,
   subscribeLogs,
+  subscribeRuntimeProgress,
   subscribeSessionUpdates,
+  subscribeUpdateNotification,
+  subscribeUpdateStatus,
   type AndroidApp,
   type AndroidProcess,
   type CodeShareProject,
   type CodeShareProjectSummary,
   type CodeShareSearchResult,
+  type ComponentUpdateStatus,
   type Device,
   type DiagnosticFinding,
+  type FridaRuntimeStatus,
+  type FridaRuntimeProgress,
   type FridaServerStatus,
   type LocalScript,
   type LogEntry,
@@ -48,10 +57,13 @@ import {
   type ScriptTemplate,
   type SessionInfo,
   type SystemStatus,
-  type ToolStatus
+  type ToolStatus,
+  type UpdateOverview,
+  type UpdatePreferences
 } from "./lib/api";
+import SettingsView from "./views/SettingsView.vue";
 
-type ViewKey = "devices" | "processes" | "scripts" | "logs";
+type ViewKey = "devices" | "processes" | "scripts" | "logs" | "settings";
 type RunMode = "attach" | "spawn";
 type TargetKind = "pid" | "name" | "package";
 type LevelFilter = "all" | "info" | "warn" | "error";
@@ -71,11 +83,14 @@ type ScriptEditorApi = {
 
 const ScriptEditor = defineAsyncComponent(() => import("./components/ScriptEditor.vue"));
 
+const repositoryURL = "https://github.com/2218164692/Frida-GUI-Helper";
+
 const views: Array<{ key: ViewKey; label: string; icon: unknown }> = [
   { key: "devices", label: "设备", icon: MonitorSmartphone },
   { key: "processes", label: "进程", icon: ListTree },
   { key: "scripts", label: "脚本", icon: FileCode2 },
-  { key: "logs", label: "日志", icon: Terminal }
+  { key: "logs", label: "日志", icon: Terminal },
+  { key: "settings", label: "设置", icon: Settings }
 ];
 
 const activeView = ref<ViewKey>("devices");
@@ -120,15 +135,34 @@ const logs = ref<LogEntry[]>([]);
 const logQuery = ref("");
 const logLevel = ref<LevelFilter>("all");
 
-const fridaLocalPath = ref("");
 const fridaRemotePath = ref("/data/local/tmp/frida-server");
-const forceRestart = ref(false);
 const serverStatus = ref<FridaServerStatus | null>(null);
+const runtimeStatus = ref<FridaRuntimeStatus | null>(null);
+const runtimeProgress = ref<FridaRuntimeProgress | null>(null);
 const serverStatusBusy = ref(false);
 const lastDiagnostic = ref<DiagnosticFinding | null>(null);
+const updatePreferences = ref<UpdatePreferences>({
+  autoCheckAppUpdates: true,
+  autoCheckFridaUpdates: true,
+  autoUpdateFrida: false,
+  notifyWhenUpdateAvailable: true
+});
+const updateOverview = ref<UpdateOverview>({
+  application: emptyUpdateStatus("application", "1.0.8"),
+  frida: emptyUpdateStatus("frida", ""),
+  installDirectory: "",
+  fridaDirectory: ""
+});
+const checkingAppUpdate = ref(false);
+const checkingFridaUpdate = ref(false);
+const updatingFrida = ref(false);
+const savingPreferences = ref(false);
 
 let unsubscribeLogs: () => void = () => {};
 let unsubscribeSessions: () => void = () => {};
+let unsubscribeRuntimeProgress: () => void = () => {};
+let unsubscribeUpdateStatus: () => void = () => {};
+let unsubscribeUpdateNotification: () => void = () => {};
 const scriptEditor = ref<ScriptEditorApi | null>(null);
 let serverStatusTimer: number | undefined;
 let serverStatusRequest = 0;
@@ -141,6 +175,20 @@ const selectedDeviceLabel = computed(() => {
   }
   const model = selectedDevice.value.model || selectedDevice.value.product || selectedDevice.value.state;
   return `${selectedDevice.value.serial}${model ? ` · ${model}` : ""}`;
+});
+const runtimeProgressPercent = computed(() => {
+  const progress = runtimeProgress.value;
+  if (!progress) {
+    return 0;
+  }
+  if (progress.totalBytes > 0) {
+    return Math.min(100, Math.max(0, Math.round(progress.percent || (progress.bytesDownloaded / progress.totalBytes) * 100)));
+  }
+  return progress.done ? 100 : 0;
+});
+const runtimeProgressDeterminate = computed(() => {
+  const progress = runtimeProgress.value;
+  return Boolean(progress && (progress.totalBytes > 0 || progress.done));
 });
 
 const activeScript = computed(() =>
@@ -242,6 +290,17 @@ onMounted(async () => {
     }
     sessions.value = sessions.value.filter((session) => session.id !== updated.id);
   });
+  unsubscribeRuntimeProgress = subscribeRuntimeProgress((progress) => {
+    runtimeProgress.value = progress;
+  });
+  unsubscribeUpdateStatus = subscribeUpdateStatus((status) => {
+    updateOverview.value = normalizeUpdateOverview(status);
+  });
+  unsubscribeUpdateNotification = subscribeUpdateNotification((message) => {
+    if (message) {
+      notice.value = message;
+    }
+  });
   await bootstrap();
   serverStatusTimer = window.setInterval(() => {
     if (selectedSerial.value && !serverStatusBusy.value) {
@@ -253,6 +312,9 @@ onMounted(async () => {
 onUnmounted(() => {
   unsubscribeLogs();
   unsubscribeSessions();
+  unsubscribeRuntimeProgress();
+  unsubscribeUpdateStatus();
+  unsubscribeUpdateNotification();
   if (serverStatusTimer !== undefined) {
     window.clearInterval(serverStatusTimer);
   }
@@ -266,10 +328,139 @@ watch(selectedSerial, () => {
 });
 
 async function bootstrap() {
-  await Promise.all([refreshStatus(), refreshScripts(), refreshOperations(), refreshLogs()]);
+  await Promise.all([
+    refreshStatus(),
+    refreshRuntimeStatus(),
+    refreshScripts(),
+    refreshOperations(),
+    refreshLogs(),
+    refreshUpdateSettings()
+  ]);
   await refreshDevices();
   await refreshServerStatus(false);
   await refreshSessions();
+}
+
+async function refreshUpdateSettings() {
+  try {
+    const [preferences, overview] = await Promise.all([api.getSettings(), api.getUpdateOverview()]);
+    updatePreferences.value = preferences;
+    updateOverview.value = normalizeUpdateOverview(overview);
+  } catch (error) {
+    reportUIError(error);
+  }
+}
+
+async function checkApplicationUpdate() {
+  checkingAppUpdate.value = true;
+  try {
+    updateOverview.value.application = normalizeUpdateStatus(await api.checkApplicationUpdate());
+  } catch (error) {
+    reportUIError(error);
+  } finally {
+    checkingAppUpdate.value = false;
+  }
+}
+
+async function checkFridaUpdate() {
+  checkingFridaUpdate.value = true;
+  try {
+    updateOverview.value.frida = normalizeUpdateStatus(await api.checkFridaUpdate());
+  } catch (error) {
+    reportUIError(error);
+  } finally {
+    checkingFridaUpdate.value = false;
+  }
+}
+
+async function updateFridaComponent() {
+  updatingFrida.value = true;
+  runtimeProgress.value = null;
+  try {
+    runtimeStatus.value = await api.updateFridaComponent();
+    await Promise.all([refreshStatus(), refreshRuntimeStatus()]);
+    updateOverview.value = normalizeUpdateOverview(await api.getUpdateOverview());
+  } catch (error) {
+    reportUIError(error);
+  } finally {
+    updatingFrida.value = false;
+  }
+}
+
+async function saveUpdatePreferences(preferences: UpdatePreferences) {
+  savingPreferences.value = true;
+  try {
+    updatePreferences.value = await api.saveSettings(preferences);
+  } catch (error) {
+    reportUIError(error);
+  } finally {
+    savingPreferences.value = false;
+  }
+}
+
+function openApplicationRelease(url: string) {
+  const target = url.trim();
+  if (!target.startsWith("https://github.com/2218164692/Frida-GUI-Helper/releases/")) {
+    notice.value = "更新下载地址无效";
+    return;
+  }
+  try {
+    BrowserOpenURL(target);
+  } catch {
+    window.open(target, "_blank", "noopener,noreferrer");
+  }
+}
+
+function emptyUpdateStatus(component: "application" | "frida", currentVersion: string): ComponentUpdateStatus {
+  return {
+    component,
+    repository: component === "application" ? "2218164692/Frida-GUI-Helper" : "frida/frida",
+    currentVersion,
+    latestVersion: "",
+    updateAvailable: false,
+    releaseUrl: "",
+    publishedAt: "",
+    checkedAt: "",
+    error: ""
+  };
+}
+
+function normalizeUpdateStatus(status: ComponentUpdateStatus): ComponentUpdateStatus {
+  const checked = status?.checkedAt ? new Date(status.checkedAt) : null;
+  return {
+    ...emptyUpdateStatus(status?.component || "application", status?.currentVersion || ""),
+    ...status,
+    checkedAt: checked && checked.getUTCFullYear() >= 2000 ? status.checkedAt : ""
+  };
+}
+
+function normalizeUpdateOverview(overview: UpdateOverview): UpdateOverview {
+  return {
+    application: normalizeUpdateStatus(overview.application),
+    frida: normalizeUpdateStatus(overview.frida),
+    installDirectory: overview.installDirectory || "",
+    fridaDirectory: overview.fridaDirectory || ""
+  };
+}
+
+function reportUIError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  notice.value = message;
+  appendLocalLog("error", "ui", message);
+}
+
+async function refreshRuntimeStatus() {
+  await withBusy("runtime-status", async () => {
+    runtimeStatus.value = await api.getFridaRuntimeStatus();
+  });
+}
+
+function openRepository() {
+  try {
+    BrowserOpenURL(repositoryURL);
+  } catch {
+    window.open(repositoryURL, "_blank", "noopener,noreferrer");
+  }
 }
 
 async function refreshServerStatus(showError = true) {
@@ -616,12 +807,28 @@ async function startFridaServer() {
   await withBusy("frida-server", async () => {
     await api.startFridaServer({
       deviceSerial: selectedSerial.value,
-      localPath: fridaLocalPath.value.trim(),
+      localPath: "",
       remotePath: fridaRemotePath.value.trim(),
-      forceRestart: forceRestart.value
+      forceRestart: true
     });
     await refreshStatus();
     await refreshServerStatus();
+  });
+}
+
+async function prepareFridaRuntime() {
+  if (!selectedSerial.value) {
+    notice.value = "请先选择 Android 设备";
+    return;
+  }
+  runtimeProgress.value = null;
+  await withBusy("runtime-prepare", async () => {
+    runtimeStatus.value = await api.prepareFridaRuntime({
+      deviceSerial: selectedSerial.value,
+      version: "latest"
+    });
+    await Promise.all([refreshStatus(), refreshRuntimeStatus(), refreshServerStatus(false)]);
+    appendLocalLog("info", "runtime", `Frida ${runtimeStatus.value?.latestVersion || "latest"} 已配置完成`);
   });
 }
 
@@ -832,6 +1039,10 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
           <ShieldCheck :size="15" />
           <span>Frida</span>
         </div>
+        <button class="repository-link" type="button" title="打开 GitHub 开源仓库" @click="openRepository">
+          <ExternalLink :size="15" />
+          <span>2218164692/Frida-GUI-Helper</span>
+        </button>
       </div>
     </aside>
 
@@ -902,6 +1113,46 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
               <span :title="systemStatus?.python.path">{{ toolLabel(systemStatus?.python) }}</span>
             </div>
           </div>
+
+          <div class="runtime-card">
+            <div>
+              <strong>安装包内置 Frida 环境</strong>
+              <span>CLI 与四种 Android ABI server 版本一致，完全忽略系统 PATH 中的 Frida</span>
+            </div>
+            <div class="runtime-meta">
+              <span v-if="runtimeStatus?.latestVersion">内置版本 {{ runtimeStatus.latestVersion }}</span>
+              <span v-if="runtimeStatus?.cacheDir" :title="runtimeStatus.cacheDir">安装包组件</span>
+              <span v-if="selectedDevice">设备 {{ selectedDevice.model || selectedDevice.serial }}</span>
+            </div>
+            <button
+              class="primary-button"
+              type="button"
+              :disabled="!selectedSerial || busy === 'runtime-prepare'"
+              @click="prepareFridaRuntime"
+            >
+              <Download :size="17" :class="{ spin: busy === 'runtime-prepare' }" />
+              <span>{{ busy === 'runtime-prepare' ? '正在校验并推送…' : '推送并启动内置版本' }}</span>
+            </button>
+            <div
+              v-if="runtimeProgress"
+              class="runtime-progress"
+              :class="{ failed: Boolean(runtimeProgress.error), indeterminate: !runtimeProgressDeterminate }"
+            >
+              <div class="runtime-progress-head">
+                <span>{{ runtimeProgress.message || '正在准备 Frida 环境…' }}</span>
+                <strong v-if="runtimeProgressDeterminate">{{ runtimeProgressPercent }}%</strong>
+              </div>
+              <div class="progress-track">
+                <div
+                  class="progress-fill"
+                  :style="{ width: `${runtimeProgressDeterminate ? runtimeProgressPercent : 100}%` }"
+                ></div>
+              </div>
+              <small v-if="runtimeProgress.asset" :title="runtimeProgress.asset">{{ runtimeProgress.asset }}</small>
+              <small v-if="runtimeProgress.error" class="runtime-progress-error">{{ runtimeProgress.error }}</small>
+            </div>
+            <small>无需在线下载 Frida；设备需要 USB 调试、ADB 授权和 Root 权限。</small>
+          </div>
         </div>
 
         <div class="panel">
@@ -929,18 +1180,15 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
                 <RefreshCw :size="16" :class="{ spin: serverStatusBusy }" />
               </button>
             </div>
-            <label>
+            <div class="bundled-path-row">
               <span>本地二进制</span>
-              <input v-model="fridaLocalPath" type="text" placeholder="留空使用 tools/frida-server 内置文件" />
-            </label>
+              <code :title="runtimeStatus?.server.path || ''">{{ runtimeStatus?.server.path || '按设备 ABI 使用安装包内置文件' }}</code>
+            </div>
             <label>
               <span>设备目标（文件或目录）</span>
               <input v-model="fridaRemotePath" type="text" placeholder="/data/local/tmp/frida-server" />
             </label>
-            <label class="check-row">
-              <input v-model="forceRestart" type="checkbox" />
-              <span>强制重启已有 frida-server</span>
-            </label>
+            <div class="managed-server-note">检测到旧进程时会自动重启，并推送与内置 CLI 完全相同的版本。</div>
             <button class="primary-button" type="button" :disabled="!selectedSerial" @click="startFridaServer">
               <Server :size="17" />
               <span>启动守护</span>
@@ -1398,6 +1646,24 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
         </div>
       </section>
 
+      <SettingsView
+        v-else-if="activeView === 'settings'"
+        :app-update="updateOverview.application"
+        :frida-update="updateOverview.frida"
+        :install-directory="updateOverview.installDirectory"
+        :frida-directory="updateOverview.fridaDirectory"
+        :preferences="updatePreferences"
+        :checking-app="checkingAppUpdate"
+        :checking-frida="checkingFridaUpdate"
+        :updating-frida="updatingFrida"
+        :saving-preferences="savingPreferences"
+        @check-app-update="checkApplicationUpdate"
+        @open-app-download="openApplicationRelease"
+        @check-frida-update="checkFridaUpdate"
+        @update-frida="updateFridaComponent"
+        @update-preferences="saveUpdatePreferences"
+      />
+
       <section v-else class="workspace">
         <div class="toolbar-band">
           <div class="segmented">
@@ -1547,6 +1813,37 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
 
 .mini-status.bad {
   color: #ffb4a9;
+}
+
+.repository-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  overflow: hidden;
+  color: #aebeb9;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  background: #30363a;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.repository-link:hover {
+  color: #ffffff;
+  background: #354044;
+  border-color: #4c5a5f;
+}
+
+.repository-link span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .main {
@@ -1788,10 +2085,156 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
   white-space: nowrap;
 }
 
+.runtime-card {
+  display: grid;
+  gap: 10px;
+  margin: 0 16px 16px;
+  padding: 13px;
+  color: #245646;
+  background: #eff9f5;
+  border: 1px solid #c4e6d8;
+  border-radius: 8px;
+}
+
+.runtime-card > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.runtime-card strong {
+  color: #145f4b;
+  font-size: 13px;
+}
+
+.runtime-card span,
+.runtime-card small {
+  color: #55766b;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.runtime-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.runtime-meta span {
+  padding: 3px 7px;
+  color: #14624f;
+  background: #dff3eb;
+  border-radius: 5px;
+}
+
+.runtime-progress {
+  display: grid;
+  gap: 5px;
+  padding: 8px 9px;
+  color: #245646;
+  background: #e2f5ed;
+  border: 1px solid #b7dfd0;
+  border-radius: 6px;
+}
+
+.runtime-progress.failed {
+  color: #9f3d32;
+  background: #fff1ef;
+  border-color: #f1c1bb;
+}
+
+.runtime-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.runtime-progress-head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-progress-head strong {
+  flex: 0 0 auto;
+  color: inherit;
+  font-size: 11px;
+}
+
+.progress-track {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  background: #c8e8dc;
+  border-radius: 99px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #16866d;
+  border-radius: inherit;
+  transition: width 0.2s ease;
+}
+
+.runtime-progress.indeterminate .progress-fill {
+  width: 45% !important;
+  animation: runtime-progress-slide 1.1s ease-in-out infinite;
+}
+
+.runtime-progress.failed .progress-track {
+  background: #f5d3cf;
+}
+
+.runtime-progress.failed .progress-fill {
+  background: #c45044;
+}
+
+.runtime-progress-error {
+  color: #a33f34 !important;
+}
+
+@keyframes runtime-progress-slide {
+  0% {
+    transform: translateX(-110%);
+  }
+  50% {
+    transform: translateX(100%);
+  }
+  100% {
+    transform: translateX(240%);
+  }
+}
+
 .form-stack {
   display: grid;
   gap: 12px;
   padding: 16px;
+}
+
+.bundled-path-row {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.bundled-path-row > span {
+  color: #52606c;
+  font-size: 12px;
+}
+
+.bundled-path-row code {
+  min-width: 0;
+  padding: 9px 10px;
+  overflow: hidden;
+  color: #53606b;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: #f7f9fb;
+  border: 1px solid #d4dbe3;
+  border-radius: 7px;
 }
 
 .server-state {
@@ -1895,6 +2338,16 @@ textarea:focus {
 
 .check-row.compact {
   font-size: 12px;
+}
+
+.managed-server-note {
+  padding: 8px 10px;
+  color: #526761;
+  font-size: 11px;
+  line-height: 1.45;
+  background: #edf8f4;
+  border: 1px solid #cae8dd;
+  border-radius: 6px;
 }
 
 .toolbar-band {
@@ -2447,8 +2900,24 @@ td.empty {
   }
 
   .brand-text,
-  .nav-label,
+  .nav-label {
+    display: none;
+  }
+
   .sidebar-footer {
+    display: grid;
+  }
+
+  .sidebar-footer .mini-status {
+    display: none;
+  }
+
+  .repository-link {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .repository-link span {
     display: none;
   }
 

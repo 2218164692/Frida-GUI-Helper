@@ -10,12 +10,14 @@
 - 通过 ADB 扫描 Android USB 设备。
 - 展示 App 和进程列表，支持 Attach 和 Spawn。
 - 支持 Root 设备上的 `frida-server` 推送、启动、停止和诊断。
-- 本地工具链优先：优先使用 `tools/` 中随软件提供的工具，再回退到系统 `PATH`。
+- Frida 工具链完全隔离：桌面 CLI、便携 Python 和 Android `frida-server` 固定从安装目录的 `frida/` 加载，不读取系统 `PATH` 中的 Frida。
 - 内置 Frida Script Hub，包含基础模板和高阶模板。
 - 支持导入本地 `.js`、`.mjs`、`.ts` Frida 脚本并在编辑器中运行。
 - Native 模板会等待目标模块加载，兼容 Spawn 和延迟加载的 `.so`。
 - CodeShare 脚本先进入编辑器供审查，仅在运行时确认并记录源码指纹。
 - Frida 会话退出后会实时同步到界面，不保留失效的活动会话。
+- 安装包自带构建时的官方最新版 Frida CLI，以及 arm64、arm、x86_64、x86 四种 Android `frida-server`；连接设备后按 ABI 自动校验、推送并启动同版本文件。
+- 设置页可检查 Frida GUI Helper 与 Frida 官方更新，并可配置启动时自动检查、Frida 组件自动更新和更新提示。
 - 实时日志控制台，支持过滤、清空和导出。
 - 提供 ADB、Frida CLI、设备 ABI、Root、server 版本、server 进程、官方 `frida-ps -U` smoke test 等诊断操作。
 
@@ -50,45 +52,46 @@
 
 ## 快速开始
 
-1. 下载或自行构建应用。
-2. 按需把 ADB、Frida CLI 和 `frida-server` 放入 `tools/` 目录。
-3. 启动 `Frida-GUI-Helper.exe`。
+1. 从 Release 下载 `Frida-GUI-Helper-v*-windows-amd64-setup.exe`。
+2. 运行安装向导并选择安装目录。
+3. 从开始菜单或桌面快捷方式启动 Frida GUI Helper。
 4. 在“设备”页面选择 Android 设备。
 5. 运行“工具链诊断”和“Frida 官方 smoke test”。
 6. 在界面中启动或推送 `frida-server`。
 7. 打开“进程”页面，选择 App 或进程。
 8. 打开“脚本”页面，选择内置模板或导入自己的脚本，然后执行 Attach 或 Spawn。
 
-## 本地工具目录
+安装器会把一套锁定版本的 Frida 组件安装到软件目录。桌面 CLI 与四种 Android server 来自同一个 Frida 官方 Release，server 下载包在构建时先校验 GitHub 提供的 SHA-256，再写入组件清单。设备页不再在线临时下载 Frida，也不会根据电脑里已有的 Frida 选择版本，因此离线状态也能向手机推送匹配的 server。ADB 仍可使用安装目录中的 Platform-tools 或系统 `PATH`；设备端仍需要 USB 调试、ADB 授权和 Root 权限。
 
-程序会优先在 exe 同目录和当前项目目录中查找 `tools/`。如果找不到，才会使用系统 `PATH` 中的工具。
+## 安装目录结构
+
+Frida 只从安装目录的受管组件中解析，不会回退到系统环境：
 
 推荐目录结构：
 
 ```text
-tools/
-  platform-tools/
-    adb.exe
-    AdbWinApi.dll
-    AdbWinUsbApi.dll
-
+Frida GUI Helper/
+  Frida-GUI-Helper.exe
+  uninstall.exe
   frida/
+    manifest.json
+    launcher.py
     frida.exe
     frida-ps.exe
     frida-ls-devices.exe
-
-  frida-server/
-    android-arm64/
+    python/
+    server/
+      android-arm64/
       frida-server
-    android-arm/
+      android-arm/
       frida-server
-    android-x86/
+      android-x86/
       frida-server
-    android-x86_64/
+      android-x86_64/
       frida-server
 ```
 
-如果 UI 中的 `frida-server` 本地路径留空，程序会根据设备 ABI 自动尝试从 `tools/frida-server/` 中选择匹配文件。
+`manifest.json` 是桌面 CLI 与手机端 server 的版本来源。设置页更新 Frida 时，会把 CLI 与全部 ABI server 更新到同一官方版本。
 
 ## 开发构建
 
@@ -124,17 +127,18 @@ cd ..
 wails dev
 ```
 
-构建 Windows 可执行文件：
+准备最新版 Frida 安装负载并构建 Windows 安装包：
 
 ```powershell
 $env:GOFLAGS="-buildvcs=false"
-wails build
+.\tools\prepare-frida-bundle.ps1 -Version latest
+.\tools\build-installer.ps1 -Architecture amd64
 ```
 
-打包后的程序位于：
+构建机还需要 Wails v2.12 和 NSIS。最终发布物位于：
 
 ```text
-build/bin/
+build/bin/Frida-GUI-Helper-v1.0.8-windows-amd64-setup.exe
 ```
 
 ## 常见问题排查

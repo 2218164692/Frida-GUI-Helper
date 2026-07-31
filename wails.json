@@ -6,10 +6,11 @@
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "http://127.0.0.1:5173",
+  "nsisType": "multiple",
   "info": {
     "companyName": "Frida GUI Helper",
     "productName": "Frida GUI Helper",
-    "productVersion": "1.0.6"
+    "productVersion": "1.0.8"
   },
   "author": {
     "name": "",

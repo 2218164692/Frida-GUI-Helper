@@ -52,10 +52,11 @@ type Process struct {
 }
 
 type FridaServerRequest struct {
-	DeviceSerial string
-	LocalPath    string
-	RemotePath   string
-	ForceRestart bool
+	DeviceSerial    string
+	LocalPath       string
+	RemotePath      string
+	ForceRestart    bool
+	ExpectedVersion string
 }
 
 const (
@@ -212,6 +213,7 @@ func (r *Runner) StartFridaServer(ctx context.Context, req FridaServerRequest) e
 	if serial == "" {
 		return errors.New("device serial is required")
 	}
+	expectedVersion := normalizeFridaServerVersion(req.ExpectedVersion)
 
 	requestedPath, err := normalizeFridaServerRemotePath(req.RemotePath)
 	if err != nil {
@@ -219,9 +221,15 @@ func (r *Runner) StartFridaServer(ctx context.Context, req FridaServerRequest) e
 	}
 
 	if pidOut, _ := r.FridaServerPID(ctx, serial); pidOut != "" {
-		if !req.ForceRestart {
+		if !req.ForceRestart && expectedVersion == "" {
 			r.logf("info", "frida-server", "设备上已有 frida-server 进程: %s", pidOut)
 			return nil
+		}
+		if expectedVersion != "" {
+			// A file at the requested path does not prove which executable the
+			// existing PID loaded. Restart whenever a managed version is required
+			// so the running process is guaranteed to use the just-verified file.
+			r.logf("info", "frida-server", "将重启现有进程并确保运行版本为 %s: %s", expectedVersion, pidOut)
 		}
 		if _, err := r.StopFridaServer(ctx, serial); err != nil {
 			return err
@@ -263,6 +271,9 @@ func (r *Runner) StartFridaServer(ctx context.Context, req FridaServerRequest) e
 	version, err := r.verifyFridaServerBinary(ctx, serial, remotePath)
 	if err != nil {
 		return err
+	}
+	if err := requireFridaServerVersion(version, expectedVersion); err != nil {
+		return fmt.Errorf("frida-server 二进制验证失败 (%s): %w", remotePath, err)
 	}
 	r.logf("info", "frida-server", "设备端二进制验证通过: %s (%s)", remotePath, version)
 
@@ -704,6 +715,36 @@ func firstNonEmptyLine(text string) string {
 
 func normalizeNewlines(text string) string {
 	return strings.ReplaceAll(text, "\r\n", "\n")
+}
+
+func normalizeFridaServerVersion(version string) string {
+	version = firstNonEmptyLine(version)
+	version = strings.TrimSpace(version)
+	if len(version) > 1 && (version[0] == 'v' || version[0] == 'V') {
+		version = strings.TrimSpace(version[1:])
+	}
+	return version
+}
+
+func fridaServerVersionsEqual(actual string, expected string) bool {
+	actual = normalizeFridaServerVersion(actual)
+	expected = normalizeFridaServerVersion(expected)
+	return actual != "" && expected != "" && actual == expected
+}
+
+func requireFridaServerVersion(actual string, expected string) error {
+	expected = normalizeFridaServerVersion(expected)
+	if expected == "" {
+		return nil
+	}
+	actual = normalizeFridaServerVersion(actual)
+	if actual == expected {
+		return nil
+	}
+	if actual == "" {
+		actual = "unknown"
+	}
+	return fmt.Errorf("版本不一致: expected %s, got %s", expected, actual)
 }
 
 func normalizeFridaServerRemotePath(remotePath string) (string, error) {

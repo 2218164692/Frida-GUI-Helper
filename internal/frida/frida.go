@@ -87,7 +87,7 @@ func NewRunner(log Logger, tools *toolchain.Resolver) *Runner {
 
 func (r *Runner) Status(ctx context.Context) ToolStatus {
 	status := ToolStatus{Name: "frida"}
-	tool := r.tools.FindExecutable("frida")
+	tool := r.tools.FindFridaTool("frida")
 	if !tool.Found {
 		status.Error = tool.Error
 		return status
@@ -136,7 +136,7 @@ func (r *Runner) RunScript(ctx context.Context, req RunRequest) (SessionInfo, er
 
 	sessionID := newID()
 	cmdCtx, cancel := context.WithCancel(ctx)
-	fridaTool := r.tools.FindExecutable("frida")
+	fridaTool := r.tools.FindFridaTool("frida")
 	if !fridaTool.Found {
 		cancel()
 		_ = os.Remove(scriptPath)

@@ -6,9 +6,9 @@ import (
 )
 
 func TestSanitize(t *testing.T) {
-	input := `device 9023f39a script C:\Users\alice\AppData\Local\Temp\hook.js project E:\private\frida`
-	got := Sanitize(input, "9023f39a", `C:\Users\alice\AppData\Local\Temp`, `E:\private\frida`)
-	for _, secret := range []string{"9023f39a", "alice", `E:\private\frida`} {
+	input := `device FAKE-SERIAL-0001 script C:\Users\example-user\AppData\Local\Temp\hook.js project X:\example-project\frida`
+	got := Sanitize(input, "FAKE-SERIAL-0001", `C:\Users\example-user\AppData\Local\Temp`, `X:\example-project\frida`)
+	for _, secret := range []string{"FAKE-SERIAL-0001", "example-user", `X:\example-project\frida`} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("sanitized output still contains %q: %s", secret, got)
 		}

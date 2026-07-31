@@ -3,6 +3,7 @@ module frida-gui-helper
 go 1.22.0
 
 require (
+	github.com/ulikunitz/xz v0.5.11
 	github.com/wailsapp/wails/v2 v2.12.0
 	golang.org/x/net v0.35.0
 )
