@@ -12,13 +12,13 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
-    "@lucide/vue": "^1.26.0",
+    "@lucide/vue": "^1.27.0",
     "monaco-editor": "^0.56.0",
     "vue": "^3.5.40"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.8",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "vite": "^8.1.5",
     "vue-tsc": "^3.3.8"
   },
