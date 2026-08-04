@@ -18,21 +18,23 @@ const (
 	configFile      = "settings.json"
 )
 
-// Settings contains update preferences which are safe to expose to the UI.
+// Settings contains application preferences which are safe to expose to the UI.
 type Settings struct {
-	AutoCheckAppUpdates   bool `json:"autoCheckAppUpdates"`
-	AutoCheckFridaUpdates bool `json:"autoCheckFridaUpdates"`
-	AutoUpdateFrida       bool `json:"autoUpdateFrida"`
-	NotifyWhenAvailable   bool `json:"notifyWhenUpdateAvailable"`
+	AutoCheckAppUpdates       bool `json:"autoCheckAppUpdates"`
+	AutoCheckFridaUpdates     bool `json:"autoCheckFridaUpdates"`
+	AutoUpdateFrida           bool `json:"autoUpdateFrida"`
+	NotifyWhenAvailable       bool `json:"notifyWhenUpdateAvailable"`
+	AutoPreflightBeforeInject bool `json:"autoPreflightBeforeInject"`
 }
 
 // Default returns the preferences used when no valid settings file exists.
 func Default() Settings {
 	return Settings{
-		AutoCheckAppUpdates:   true,
-		AutoCheckFridaUpdates: true,
-		AutoUpdateFrida:       false,
-		NotifyWhenAvailable:   true,
+		AutoCheckAppUpdates:       true,
+		AutoCheckFridaUpdates:     true,
+		AutoUpdateFrida:           false,
+		NotifyWhenAvailable:       true,
+		AutoPreflightBeforeInject: false,
 	}
 }
 
@@ -114,10 +116,11 @@ func (s *Store) Save(value Settings) error {
 }
 
 type diskSettings struct {
-	AutoCheckAppUpdates   *bool `json:"autoCheckAppUpdates"`
-	AutoCheckFridaUpdates *bool `json:"autoCheckFridaUpdates"`
-	AutoUpdateFrida       *bool `json:"autoUpdateFrida"`
-	NotifyWhenAvailable   *bool `json:"notifyWhenUpdateAvailable"`
+	AutoCheckAppUpdates       *bool `json:"autoCheckAppUpdates"`
+	AutoCheckFridaUpdates     *bool `json:"autoCheckFridaUpdates"`
+	AutoUpdateFrida           *bool `json:"autoUpdateFrida"`
+	NotifyWhenAvailable       *bool `json:"notifyWhenUpdateAvailable"`
+	AutoPreflightBeforeInject *bool `json:"autoPreflightBeforeInject"`
 }
 
 func decode(data []byte) (Settings, error) {
@@ -146,6 +149,9 @@ func decode(data []byte) (Settings, error) {
 	}
 	if saved.NotifyWhenAvailable != nil {
 		value.NotifyWhenAvailable = *saved.NotifyWhenAvailable
+	}
+	if saved.AutoPreflightBeforeInject != nil {
+		value.AutoPreflightBeforeInject = *saved.AutoPreflightBeforeInject
 	}
 	return value, nil
 }

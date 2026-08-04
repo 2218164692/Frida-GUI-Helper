@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   AlertTriangle,
   ChevronLeft,
@@ -22,7 +22,6 @@ import {
   Server,
   Settings,
   ShieldCheck,
-  Square,
   Star,
   StarOff,
   Terminal,
@@ -36,6 +35,7 @@ import {
   api,
   subscribeLogs,
   subscribeRuntimeProgress,
+  subscribeSessionLogs,
   subscribeSessionUpdates,
   subscribeUpdateNotification,
   subscribeUpdateStatus,
@@ -53,17 +53,26 @@ import {
   type LocalScript,
   type LogEntry,
   type OperationTemplate,
+  type PreflightRequest,
+  type PreflightResult,
+  type RunProfile,
   type SaveLocalScriptRequest,
   type ScriptTemplate,
+  type ScriptMetadata,
   type SessionInfo,
+  type SessionLogEntry,
   type SystemStatus,
   type ToolStatus,
   type UpdateOverview,
   type UpdatePreferences
 } from "./lib/api";
 import SettingsView from "./views/SettingsView.vue";
+import PreflightPanel from "./components/PreflightPanel.vue";
+import ProfilesView from "./components/ProfilesView.vue";
+import ScriptParameterForm from "./components/ScriptParameterForm.vue";
+import SessionPanel from "./components/SessionPanel.vue";
 
-type ViewKey = "devices" | "processes" | "scripts" | "logs" | "settings";
+type ViewKey = "devices" | "profiles" | "processes" | "scripts" | "logs" | "settings";
 type RunMode = "attach" | "spawn";
 type TargetKind = "pid" | "name" | "package";
 type LevelFilter = "all" | "info" | "warn" | "error";
@@ -87,6 +96,7 @@ const repositoryURL = "https://github.com/2218164692/Frida-GUI-Helper";
 
 const views: Array<{ key: ViewKey; label: string; icon: unknown }> = [
   { key: "devices", label: "设备", icon: MonitorSmartphone },
+  { key: "profiles", label: "运行配置", icon: Save },
   { key: "processes", label: "进程", icon: ListTree },
   { key: "scripts", label: "脚本", icon: FileCode2 },
   { key: "logs", label: "日志", icon: Terminal },
@@ -119,10 +129,10 @@ const scriptNameInput = ref("");
 const scriptDescriptionInput = ref("");
 const scriptTagsInput = ref("");
 const scriptFavorite = ref(false);
-const variablePackageName = ref("");
-const variableModuleName = ref("");
-const variableFunctionName = ref("");
-const variableOutputDir = ref("/data/local/tmp");
+const scriptMetadata = ref<ScriptMetadata | null>(null);
+const scriptParameterValues = ref<Record<string, string | number | boolean>>({});
+const scriptMetadataLoading = ref(false);
+const scriptMetadataError = ref("");
 const codeShareQuery = ref("");
 const codeShareResult = ref<CodeShareSearchResult | null>(null);
 const activeCodeShareProject = ref<CodeShareProject | null>(null);
@@ -131,6 +141,17 @@ const targetKind = ref<TargetKind>("name");
 const target = ref("");
 
 const sessions = ref<SessionInfo[]>([]);
+const selectedSessionID = ref("");
+const sessionLogs = ref<SessionLogEntry[]>([]);
+const profiles = ref<RunProfile[]>([]);
+const lastProfile = ref<RunProfile | null>(null);
+const profileDraftName = ref("");
+const selectedProfileID = ref("");
+const profileCodeShareSnapshot = ref<{ ref: string; fingerprint: string } | null>(null);
+const preflightResult = ref<PreflightResult | null>(null);
+const preflightChecking = ref(false);
+const preflightRepairing = ref(false);
+const scriptRunLocked = ref(false);
 const logs = ref<LogEntry[]>([]);
 const logQuery = ref("");
 const logLevel = ref<LevelFilter>("all");
@@ -145,10 +166,11 @@ const updatePreferences = ref<UpdatePreferences>({
   autoCheckAppUpdates: true,
   autoCheckFridaUpdates: true,
   autoUpdateFrida: false,
-  notifyWhenUpdateAvailable: true
+  notifyWhenUpdateAvailable: true,
+  autoPreflightBeforeInject: false
 });
 const updateOverview = ref<UpdateOverview>({
-  application: emptyUpdateStatus("application", "1.0.8"),
+  application: emptyUpdateStatus("application", "1.0.9"),
   frida: emptyUpdateStatus("frida", ""),
   installDirectory: "",
   fridaDirectory: ""
@@ -160,14 +182,28 @@ const savingPreferences = ref(false);
 
 let unsubscribeLogs: () => void = () => {};
 let unsubscribeSessions: () => void = () => {};
+let unsubscribeSessionLogs: () => void = () => {};
 let unsubscribeRuntimeProgress: () => void = () => {};
 let unsubscribeUpdateStatus: () => void = () => {};
 let unsubscribeUpdateNotification: () => void = () => {};
 const scriptEditor = ref<ScriptEditorApi | null>(null);
+const scriptWorkbench = ref<HTMLElement | null>(null);
+const scriptEditorPaneSize = ref<number | null>(null);
 let serverStatusTimer: number | undefined;
 let serverStatusRequest = 0;
+let sessionLogRequest = 0;
+let scriptMetadataRequest = 0;
+let preflightRequest = 0;
+let scriptMetadataTimer: number | undefined;
+let selectedProfileSignature = "";
+let scriptResizeStartY = 0;
+let scriptResizeStartHeight = 0;
+let scriptResizing = false;
 
 const currentTitle = computed(() => views.find((view) => view.key === activeView.value)?.label ?? "");
+const scriptWorkbenchStyle = computed(() => ({
+  "--editor-pane-size": scriptEditorPaneSize.value === null ? "auto" : `${scriptEditorPaneSize.value}px`
+} as Record<string, string>));
 const selectedDevice = computed(() => devices.value.find((device) => device.serial === selectedSerial.value));
 const selectedDeviceLabel = computed(() => {
   if (!selectedDevice.value) {
@@ -194,8 +230,16 @@ const runtimeProgressDeterminate = computed(() => {
 const activeScript = computed(() =>
   [...savedScriptItems.value, ...scripts.value].find((script) => script.id === selectedScriptID.value)
 );
-const activeScriptName = computed(() => activeScript.value?.name || "自定义脚本");
-const canRunScript = computed(() => Boolean(selectedSerial.value && target.value.trim() && editorSource.value.trim()));
+const activeScriptName = computed(() => scriptNameInput.value.trim() || activeScript.value?.name || "自定义脚本");
+const canRunScript = computed(() => {
+  if (!selectedSerial.value || !target.value.trim() || !editorSource.value.trim() || scriptMetadataError.value) return false;
+  return (scriptMetadata.value?.parameters ?? []).every((parameter) => {
+    if (!parameter.required) return true;
+    const value = scriptParameterValues.value[parameter.name];
+    return value !== undefined && value !== null && value !== "";
+  });
+});
+const canSaveProfile = computed(() => Boolean(profileDraftName.value.trim() && canRunScript.value));
 const savedScriptItems = computed<ScriptListItem[]>(() =>
   savedScripts.value.map((script) => ({
     id: `saved:${script.id}`,
@@ -271,9 +315,66 @@ const filteredLogs = computed(() => {
   });
 });
 
-const runningSessions = computed(() => sessions.value.filter((session) => session.running));
+function startScriptSplitResize(event: PointerEvent) {
+  const workbench = scriptWorkbench.value;
+  const editor = workbench?.querySelector<HTMLElement>(".editor-panel");
+  if (!workbench || !editor) {
+    return;
+  }
+  scriptResizing = true;
+  scriptResizeStartY = event.clientY;
+  scriptResizeStartHeight = editor.getBoundingClientRect().height;
+  window.addEventListener("pointermove", resizeScriptSplit);
+  window.addEventListener("pointerup", stopScriptSplitResize, { once: true });
+  window.addEventListener("pointercancel", stopScriptSplitResize, { once: true });
+  event.preventDefault();
+}
+
+function resizeScriptSplit(event: PointerEvent) {
+  if (!scriptResizing || !scriptWorkbench.value) {
+    return;
+  }
+  const workbenchHeight = scriptWorkbench.value.clientHeight;
+  const minEditorHeight = 300;
+  const minSessionHeight = 300;
+  const splitterHeight = 12;
+  const maxEditorHeight = Math.max(minEditorHeight, workbenchHeight - minSessionHeight - splitterHeight);
+  scriptEditorPaneSize.value = Math.max(
+    minEditorHeight,
+    Math.min(maxEditorHeight, scriptResizeStartHeight + event.clientY - scriptResizeStartY)
+  );
+}
+
+function stopScriptSplitResize() {
+  scriptResizing = false;
+  window.removeEventListener("pointermove", resizeScriptSplit);
+  window.removeEventListener("pointercancel", stopScriptSplitResize);
+}
+
+function resizeScriptSplitByKeyboard(event: KeyboardEvent) {
+  if (!scriptWorkbench.value) return;
+  const step = event.shiftKey ? 96 : 32;
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+  const editor = scriptWorkbench.value.querySelector<HTMLElement>(".editor-panel");
+  if (!editor) return;
+  const workbenchHeight = scriptWorkbench.value.clientHeight;
+  const maxEditorHeight = Math.max(300, workbenchHeight - 312);
+  const currentHeight = scriptEditorPaneSize.value ?? editor.getBoundingClientRect().height;
+  const nextHeight = event.key === "ArrowUp" ? currentHeight - step : currentHeight + step;
+  scriptEditorPaneSize.value = Math.max(300, Math.min(maxEditorHeight, nextHeight));
+  event.preventDefault();
+}
+
+function clampScriptPaneSize() {
+  if (scriptEditorPaneSize.value === null || !scriptWorkbench.value) {
+    return;
+  }
+  const maxEditorHeight = Math.max(300, scriptWorkbench.value.clientHeight - 312);
+  scriptEditorPaneSize.value = Math.min(scriptEditorPaneSize.value, maxEditorHeight);
+}
 
 onMounted(async () => {
+  window.addEventListener("resize", clampScriptPaneSize);
   unsubscribeLogs = subscribeLogs((entry) => {
     logs.value = [...logs.value, entry].slice(-1000);
     if (entry.diagnostic) {
@@ -281,14 +382,19 @@ onMounted(async () => {
     }
   });
   unsubscribeSessions = subscribeSessionUpdates((updated) => {
-    if (updated.running) {
-      const exists = sessions.value.some((session) => session.id === updated.id);
-      sessions.value = exists
-        ? sessions.value.map((session) => session.id === updated.id ? updated : session)
-        : [updated, ...sessions.value];
+    const exists = sessions.value.some((session) => session.id === updated.id);
+    sessions.value = exists
+      ? sessions.value.map((session) => session.id === updated.id ? updated : session)
+      : [updated, ...sessions.value];
+    if (!selectedSessionID.value) {
+      void selectSession(updated);
+    }
+  });
+  unsubscribeSessionLogs = subscribeSessionLogs((entry) => {
+    if (entry.sessionId !== selectedSessionID.value) {
       return;
     }
-    sessions.value = sessions.value.filter((session) => session.id !== updated.id);
+    sessionLogs.value = mergeSessionLogs(entry.sessionId, sessionLogs.value, [entry]);
   });
   unsubscribeRuntimeProgress = subscribeRuntimeProgress((progress) => {
     runtimeProgress.value = progress;
@@ -312,19 +418,41 @@ onMounted(async () => {
 onUnmounted(() => {
   unsubscribeLogs();
   unsubscribeSessions();
+  unsubscribeSessionLogs();
   unsubscribeRuntimeProgress();
   unsubscribeUpdateStatus();
   unsubscribeUpdateNotification();
   if (serverStatusTimer !== undefined) {
     window.clearInterval(serverStatusTimer);
   }
+  window.removeEventListener("resize", clampScriptPaneSize);
+  window.removeEventListener("pointermove", resizeScriptSplit);
+  window.removeEventListener("pointercancel", stopScriptSplitResize);
+  if (scriptMetadataTimer !== undefined) {
+    window.clearTimeout(scriptMetadataTimer);
+  }
 });
 
 watch(selectedSerial, () => {
+  invalidatePreflight();
   serverStatus.value = null;
   if (selectedSerial.value) {
     void refreshServerStatus();
   }
+});
+
+watch([runMode, targetKind, target, fridaRemotePath], () => {
+  invalidatePreflight();
+});
+
+watch(editorSource, () => {
+  if (scriptMetadataTimer !== undefined) {
+    window.clearTimeout(scriptMetadataTimer);
+  }
+  scriptMetadataTimer = window.setTimeout(() => {
+    scriptMetadataTimer = undefined;
+    void refreshScriptMetadata();
+  }, 250);
 });
 
 async function bootstrap() {
@@ -334,6 +462,7 @@ async function bootstrap() {
     refreshScripts(),
     refreshOperations(),
     refreshLogs(),
+    refreshProfiles(),
     refreshUpdateSettings()
   ]);
   await refreshDevices();
@@ -396,6 +525,13 @@ async function saveUpdatePreferences(preferences: UpdatePreferences) {
   } finally {
     savingPreferences.value = false;
   }
+}
+
+async function toggleAutoPreflightBeforeInject() {
+  await saveUpdatePreferences({
+    ...updatePreferences.value,
+    autoPreflightBeforeInject: !updatePreferences.value.autoPreflightBeforeInject
+  });
 }
 
 function openApplicationRelease(url: string) {
@@ -591,10 +727,67 @@ async function refreshLogs() {
 
 async function refreshSessions() {
   sessions.value = await api.listSessions();
+  if (!sessions.value.some((session) => session.id === selectedSessionID.value)) {
+    sessionLogRequest++;
+    selectedSessionID.value = "";
+    sessionLogs.value = [];
+  }
+  if (!selectedSessionID.value && sessions.value.length > 0) {
+    await selectSession(sessions.value[0]);
+  }
+}
+
+async function selectSession(session: SessionInfo) {
+  const requestID = ++sessionLogRequest;
+  const switchingSession = selectedSessionID.value !== session.id;
+  selectedSessionID.value = session.id;
+  if (switchingSession) {
+    sessionLogs.value = [];
+  }
+  try {
+    const entries = await api.getSessionLogs(session.id);
+    if (requestID === sessionLogRequest && selectedSessionID.value === session.id) {
+      sessionLogs.value = mergeSessionLogs(session.id, sessionLogs.value, entries);
+    }
+  } catch (error) {
+    if (requestID === sessionLogRequest && selectedSessionID.value === session.id) {
+      reportUIError(error);
+    }
+  }
+}
+
+function mergeSessionLogs(
+  sessionID: string,
+  ...collections: SessionLogEntry[][]
+): SessionLogEntry[] {
+  const entries = new Map<string, SessionLogEntry>();
+  for (const collection of collections) {
+    for (const entry of collection) {
+      if (entry.sessionId !== sessionID) continue;
+      entries.set(`${entry.sessionId}:${entry.sequence}`, entry);
+    }
+  }
+  return Array.from(entries.values())
+    .sort((left, right) => left.sequence - right.sequence)
+    .slice(-2000);
+}
+
+async function refreshProfiles() {
+  try {
+    const [items, last] = await Promise.all([api.listProfiles(), api.getLastProfile()]);
+    profiles.value = items;
+    lastProfile.value = last;
+  } catch (error) {
+    reportUIError(error);
+  }
 }
 
 function selectScript(script: ScriptTemplate) {
   selectedScriptID.value = script.id;
+  profileCodeShareSnapshot.value = null;
+  scriptMetadata.value = null;
+  scriptMetadataError.value = "";
+  scriptParameterValues.value = {};
   editorSource.value = script.source;
   scriptNameInput.value = script.name || "";
   scriptDescriptionInput.value = script.description || "";
@@ -607,6 +800,276 @@ function selectScript(script: ScriptTemplate) {
     activeCodeShareProject.value = null;
   }
   activeView.value = "scripts";
+}
+
+async function refreshScriptMetadata(overrides?: Record<string, string>) {
+  const requestID = ++scriptMetadataRequest;
+  const source = editorSource.value;
+  scriptMetadataLoading.value = true;
+  scriptMetadataError.value = "";
+  try {
+    const metadata = await api.getScriptMetadata(source);
+    if (requestID !== scriptMetadataRequest || source !== editorSource.value) return;
+    scriptMetadata.value = metadata;
+    const next: Record<string, string | number | boolean> = {};
+    for (const parameter of metadata?.parameters ?? []) {
+      const raw = overrides?.[parameter.name];
+      if (raw !== undefined) {
+        next[parameter.name] = coerceProfileVariable(parameter.type, raw);
+      } else if (Object.prototype.hasOwnProperty.call(scriptParameterValues.value, parameter.name)) {
+        next[parameter.name] = scriptParameterValues.value[parameter.name];
+      } else if (parameter.hasDefault) {
+        next[parameter.name] = parameter.default as string | number | boolean;
+      } else if (parameter.name === "packageName") {
+        next[parameter.name] = runMode.value === "spawn" || targetKind.value === "package" ? target.value.trim() : "";
+      } else {
+        next[parameter.name] = parameter.type === "boolean" ? false : "";
+      }
+    }
+    scriptParameterValues.value = next;
+  } catch (error) {
+    if (requestID === scriptMetadataRequest && source === editorSource.value) {
+      scriptMetadata.value = null;
+      scriptMetadataError.value = error instanceof Error ? error.message : String(error);
+    }
+  } finally {
+    if (requestID === scriptMetadataRequest) scriptMetadataLoading.value = false;
+  }
+}
+
+function coerceProfileVariable(type: string, value: string): string | number | boolean {
+  if (type === "boolean") return value === "true";
+  if (type === "number") {
+    if (!value.trim()) return "";
+    const number = Number(value);
+    return Number.isFinite(number) ? number : value;
+  }
+  return value;
+}
+
+function updateScriptParameter(name: string, value: string | number | boolean) {
+  scriptParameterValues.value = { ...scriptParameterValues.value, [name]: value };
+}
+
+function profileVariables(): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(runtimeScriptVariables()).map(([name, value]) => [name, String(value)])
+  );
+}
+
+function runtimeScriptVariables(): Record<string, string | number | boolean> {
+  const definitions = new Map((scriptMetadata.value?.parameters ?? []).map((parameter) => [parameter.name, parameter]));
+  return Object.fromEntries(Object.entries(scriptParameterValues.value).filter(([name, value]) => {
+    const parameter = definitions.get(name);
+    return !(value === "" && !parameter?.required && (parameter?.type === "number" || parameter?.type === "select"));
+  }));
+}
+
+function generatedProfileName() {
+  return `${activeScriptName.value} · ${target.value.trim()}`;
+}
+
+function currentProfileRequest(id = selectedProfileID.value, nameOverride?: string) {
+  const packageName = String(scriptParameterValues.value.packageName || (
+    runMode.value === "spawn" || targetKind.value === "package" ? target.value.trim() : ""
+  ));
+  const name = nameOverride === undefined
+    ? profileDraftName.value.trim() || generatedProfileName()
+    : nameOverride.trim() || generatedProfileName();
+  return {
+    id,
+    name,
+    deviceSerial: selectedSerial.value,
+    packageName,
+    target: target.value.trim(),
+    mode: runMode.value,
+    targetKind: runMode.value === "spawn" ? "package" as const : targetKind.value,
+    scriptName: activeScriptName.value,
+    scriptSource: editorSource.value,
+    scriptID: selectedScriptID.value,
+    variables: profileVariables(),
+    serverPath: fridaRemotePath.value.trim() || "/data/local/tmp/frida-server"
+  };
+}
+
+function currentProfileSignature() {
+  const request = currentProfileRequest("");
+  return JSON.stringify({
+    ...request,
+    variables: Object.fromEntries(Object.entries(request.variables).sort(([left], [right]) => left.localeCompare(right)))
+  });
+}
+
+async function saveCurrentProfile(markRun = false, forceNew = false) {
+  const signature = currentProfileSignature();
+  if (
+    markRun &&
+    !forceNew &&
+    selectedProfileID.value &&
+    selectedProfileSignature === signature
+  ) {
+    const marked = await api.markProfileRun(selectedProfileID.value);
+    await refreshProfiles();
+    return marked;
+  }
+  const detachChangedProfile = Boolean(
+    !forceNew && selectedProfileID.value && selectedProfileSignature !== signature
+  );
+  const profileID = forceNew || detachChangedProfile ? "" : selectedProfileID.value;
+  const saved = await api.saveProfile(currentProfileRequest(profileID, detachChangedProfile ? "" : undefined));
+  selectedProfileID.value = saved.id;
+  profileDraftName.value = saved.name;
+  selectedProfileSignature = currentProfileSignature();
+  if (detachChangedProfile) {
+    appendLocalLog("info", "profiles", "当前配置已变更，已另存为新的最近运行配置；原命名配置保持不变");
+  }
+  if (markRun) await api.markProfileRun(saved.id);
+  await refreshProfiles();
+  return saved;
+}
+
+async function saveProfileFromView() {
+  await withBusy("save-profile", async () => {
+    await saveCurrentProfile(false, true);
+    notice.value = "运行配置已保存";
+  });
+}
+
+async function applyProfile(profile: RunProfile) {
+  scriptMetadata.value = null;
+  scriptMetadataError.value = "";
+  scriptParameterValues.value = {};
+  selectedProfileID.value = profile.id;
+  profileDraftName.value = profile.name;
+  selectedSerial.value = profile.deviceSerial;
+  runMode.value = profile.mode;
+  targetKind.value = profile.targetKind;
+  target.value = profile.target;
+  fridaRemotePath.value = profile.serverPath || "/data/local/tmp/frida-server";
+  selectedScriptID.value = profile.scriptID;
+  profileCodeShareSnapshot.value = codeShareSnapshotFromScriptID(profile.scriptID);
+  scriptNameInput.value = profile.scriptName;
+  editorSource.value = profile.scriptSource;
+  scriptDescriptionInput.value = "";
+  scriptTagsInput.value = "";
+  scriptFavorite.value = false;
+  activeCodeShareProject.value = null;
+  activeView.value = "scripts";
+  await nextTick();
+  if (scriptMetadataTimer !== undefined) {
+    window.clearTimeout(scriptMetadataTimer);
+    scriptMetadataTimer = undefined;
+  }
+  await refreshScriptMetadata(profile.variables);
+  selectedProfileSignature = currentProfileSignature();
+}
+
+function codeShareSnapshotFromScriptID(scriptID: string) {
+  if (!scriptID.startsWith("codeshare:")) return null;
+  const value = scriptID.slice("codeshare:".length);
+  const separator = value.lastIndexOf(":");
+  if (separator <= 0) return { ref: value || "unknown", fingerprint: "unknown" };
+  return { ref: value.slice(0, separator), fingerprint: value.slice(separator + 1) || "unknown" };
+}
+
+function confirmProfileCodeShareSnapshot() {
+  const snapshot = profileCodeShareSnapshot.value;
+  if (!snapshot) return true;
+  return window.confirm([
+    "该运行配置包含保存的 Frida CodeShare 脚本快照。",
+    `项目：@${snapshot.ref}`,
+    `保存时 SHA-256：${snapshot.fingerprint}`,
+    "配置文件中的脚本可能已在本地修改，本次不会把它当作在线已信任源码。",
+    "请先检查编辑器中的完整源码，并确认只在已授权目标上运行。",
+    "",
+    "是否继续注入？"
+  ].join("\n"));
+}
+
+async function runSavedProfile(profile: RunProfile) {
+  await withScriptRunLock(async () => {
+    await applyProfile(profile);
+    await runCurrentScriptUnlocked();
+  });
+}
+
+async function withScriptRunLock(action: () => Promise<void>) {
+  if (scriptRunLocked.value) return;
+  scriptRunLocked.value = true;
+  try {
+    await action();
+  } catch (error) {
+    reportUIError(error);
+  } finally {
+    scriptRunLocked.value = false;
+  }
+}
+
+async function deleteProfile(profile: RunProfile) {
+  if (!window.confirm(`确认删除运行配置“${profile.name}”？`)) return;
+  await withBusy(`delete-profile-${profile.id}`, async () => {
+    await api.deleteProfile(profile.id);
+    if (selectedProfileID.value === profile.id) {
+      selectedProfileID.value = "";
+      selectedProfileSignature = "";
+    }
+    await refreshProfiles();
+  });
+}
+
+function makePreflightRequest(session?: SessionInfo): PreflightRequest {
+  return {
+    deviceSerial: session?.deviceSerial || selectedSerial.value,
+    mode: (session?.mode || runMode.value) as RunMode,
+    targetKind: (session?.targetKind || (runMode.value === "spawn" ? "package" : targetKind.value)) as TargetKind,
+    target: session?.target || target.value.trim(),
+    serverPath: fridaRemotePath.value.trim() || "/data/local/tmp/frida-server"
+  };
+}
+
+function invalidatePreflight() {
+  preflightRequest++;
+  preflightResult.value = null;
+  preflightChecking.value = false;
+  preflightRepairing.value = false;
+}
+
+async function checkPreflight(request = makePreflightRequest()) {
+  const requestID = ++preflightRequest;
+  preflightRepairing.value = false;
+  preflightChecking.value = true;
+  try {
+    const result = await api.runPreflight(request);
+    if (requestID !== preflightRequest) return false;
+    preflightResult.value = result;
+    if (!result.ready) notice.value = "注入前检查未通过，请查看阻塞项并修复";
+    return result.ready;
+  } catch (error) {
+    if (requestID !== preflightRequest) return false;
+    reportUIError(error);
+    return false;
+  } finally {
+    if (requestID === preflightRequest) preflightChecking.value = false;
+  }
+}
+
+async function repairPreflight() {
+  const requestID = ++preflightRequest;
+  preflightChecking.value = false;
+  preflightRepairing.value = true;
+  try {
+    const result = await api.restartFridaServerAndCheck(makePreflightRequest());
+    if (requestID !== preflightRequest) return;
+    preflightResult.value = result;
+    await refreshServerStatus(false);
+    if (requestID !== preflightRequest) return;
+    notice.value = result.ready ? "server 已重启，全部检查通过" : "server 已处理，但仍有其他检查未通过";
+  } catch (error) {
+    if (requestID !== preflightRequest) return;
+    reportUIError(error);
+  } finally {
+    if (requestID === preflightRequest) preflightRepairing.value = false;
+  }
 }
 
 function onScriptEditorReady(apiRef: ScriptEditorApi) {
@@ -664,30 +1127,6 @@ function parseTags(value: string) {
     .map((tag) => tag.trim().replace(/^#/, ""))
     .filter(Boolean)
     .slice(0, 12);
-}
-
-function applyRuntimeVariables(source: string) {
-  const values: Record<string, string> = {
-    deviceSerial: selectedSerial.value,
-    target: target.value.trim(),
-    targetKind: runMode.value === "spawn" ? "package" : targetKind.value,
-    packageName:
-      variablePackageName.value.trim() ||
-      (runMode.value === "spawn" || targetKind.value === "package" ? target.value.trim() : ""),
-    moduleName: variableModuleName.value.trim(),
-    functionName: variableFunctionName.value.trim(),
-    outputDir: variableOutputDir.value.trim() || "/data/local/tmp"
-  };
-  return source.replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g, (match, key: string) =>
-    Object.prototype.hasOwnProperty.call(values, key) ? values[key] : match
-  );
-}
-
-function applyVariablesToEditor() {
-  const nextSource = applyRuntimeVariables(editorSource.value);
-  editorSource.value = nextSource;
-  scriptEditor.value?.replace(nextSource);
-  appendLocalLog("info", "ui", "已将运行变量写入编辑器");
 }
 
 async function openCodeShare() {
@@ -875,7 +1314,9 @@ function prepareAttach(process: AndroidProcess) {
   runMode.value = "attach";
   targetKind.value = "pid";
   target.value = String(process.pid);
-  variablePackageName.value = process.package || process.name || variablePackageName.value;
+  if (Object.prototype.hasOwnProperty.call(scriptParameterValues.value, "packageName")) {
+    updateScriptParameter("packageName", process.package || process.name);
+  }
   activeView.value = "scripts";
 }
 
@@ -888,7 +1329,9 @@ function prepareSpawn(app: AndroidApp) {
   runMode.value = "spawn";
   targetKind.value = "package";
   target.value = app.package;
-  variablePackageName.value = app.package;
+  if (Object.prototype.hasOwnProperty.call(scriptParameterValues.value, "packageName")) {
+    updateScriptParameter("packageName", app.package);
+  }
   activeView.value = "scripts";
 }
 
@@ -898,26 +1341,50 @@ async function spawnApp(app: AndroidApp) {
 }
 
 async function runCurrentScript() {
+  await withScriptRunLock(runCurrentScriptUnlocked);
+}
+
+async function runCurrentScriptUnlocked() {
   await withBusy("run-script", async () => {
+    // Flush target/device watchers before assigning the preflight request ID.
+    // Quick actions update the target and run in the same event handler.
+    await nextTick();
+    if (!confirmProfileCodeShareSnapshot()) {
+      appendLocalLog("warn", "profiles", "已取消运行配置中的 CodeShare 脚本快照");
+      return;
+    }
     if (!await confirmCodeShareRun()) {
       appendLocalLog("warn", "codeshare", "已取消运行未信任的 CodeShare 脚本");
       return;
     }
-    const source = applyRuntimeVariables(editorSource.value);
+    if (updatePreferences.value.autoPreflightBeforeInject) {
+      if (!await checkPreflight()) {
+        return;
+      }
+    }
     const session = await api.runScript({
       deviceSerial: selectedSerial.value,
       mode: runMode.value,
       targetKind: runMode.value === "spawn" ? "package" : targetKind.value,
       target: target.value.trim(),
       scriptName: activeScriptName.value,
-      scriptSource: source
+      scriptSource: editorSource.value,
+      variables: runtimeScriptVariables()
     });
     if (selectedLocalScriptID.value) {
       await api.recordLocalScriptRun(selectedLocalScriptID.value);
       await refreshScripts();
     }
     appendLocalLog("info", "ui", `已创建 Frida 会话 ${session.id}`);
+    try {
+      await saveCurrentProfile(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      appendLocalLog("warn", "profiles", `会话已启动，但保存上次运行配置失败: ${message}`);
+      notice.value = "会话已启动，但上次运行配置保存失败";
+    }
     await refreshSessions();
+    await selectSession(session);
   });
 }
 
@@ -938,7 +1405,48 @@ async function stopSession(sessionID: string) {
   await withBusy(`stop-${sessionID}`, async () => {
     await api.stopSession(sessionID);
     await refreshSessions();
+    const updated = sessions.value.find((session) => session.id === sessionID);
+    if (updated) await selectSession(updated);
   });
+}
+
+async function restartSession(session: SessionInfo) {
+  await withBusy(`restart-${session.id}`, async () => {
+    if (updatePreferences.value.autoPreflightBeforeInject && !await checkPreflight(makePreflightRequest(session))) return;
+    const restarted = await api.restartSession(session.id);
+    appendLocalLog("info", "ui", `已重新注入，会话 ${restarted.id}`);
+    await refreshSessions();
+    await selectSession(restarted);
+  });
+}
+
+async function copySessionError(session: SessionInfo) {
+  const stderr = (session.id === selectedSessionID.value ? sessionLogs.value : await api.getSessionLogs(session.id))
+    .filter((entry) => entry.stream === "stderr")
+    .map((entry) => `[${entry.timestamp}] ${entry.message}`)
+    .join("\n");
+  const content = [
+    `Session: ${session.id}`,
+    `Script: ${session.scriptName}`,
+    `Target: ${session.mode} ${session.targetKind} ${session.target}`,
+    `Duration: ${session.durationMs}ms`,
+    `Exit: ${session.exitReason || "-"}${session.exitCode != null ? ` (${session.exitCode})` : ""}`,
+    session.error ? `Error: ${session.error}` : "",
+    stderr ? `stderr:\n${stderr}` : ""
+  ].filter(Boolean).join("\n");
+  try {
+    await navigator.clipboard.writeText(content);
+  } catch {
+    const textarea = document.createElement("textarea");
+    textarea.value = content;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+  notice.value = "会话错误信息已复制";
 }
 
 async function clearLogs() {
@@ -1245,6 +1753,20 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
         </div>
       </section>
 
+      <ProfilesView
+        v-else-if="activeView === 'profiles'"
+        :profiles="profiles"
+        :last-profile="lastProfile"
+        :draft-name="profileDraftName"
+        :busy="scriptRunLocked ? 'run-script' : busy"
+        :can-save="canSaveProfile"
+        @update:draft-name="profileDraftName = $event"
+        @save="saveProfileFromView"
+        @load="applyProfile"
+        @run="runSavedProfile"
+        @delete="deleteProfile"
+      />
+
       <section v-else-if="activeView === 'processes'" class="workspace">
         <div class="toolbar-band">
           <div class="segmented">
@@ -1501,6 +2023,12 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
           </template>
         </div>
 
+        <div
+          ref="scriptWorkbench"
+          class="script-workbench"
+          :class="{ 'has-editor-pane-size': scriptEditorPaneSize !== null }"
+          :style="scriptWorkbenchStyle"
+        >
         <div class="panel editor-panel" :class="{ 'codeshare-active': activeCodeShareProject }">
           <div class="panel-header">
             <div>
@@ -1528,7 +2056,8 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
                 <Search :size="17" />
               </button>
               <button class="small-button" type="button" title="格式化脚本" @click="scriptEditor?.format()">格式化</button>
-              <button class="primary-button" type="button" :disabled="!canRunScript" @click="runCurrentScript">
+              <button class="small-button" type="button" title="保存当前运行配置" @click="activeView = 'profiles'">保存配置</button>
+              <button class="primary-button" type="button" :disabled="!canRunScript || scriptRunLocked" @click="runCurrentScript">
                 <Play :size="17" />
                 <span>注入</span>
               </button>
@@ -1576,6 +2105,16 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
             </label>
           </div>
 
+          <PreflightPanel
+            :result="preflightResult"
+            :checking="preflightChecking"
+            :repairing="preflightRepairing"
+            :auto-check-before-inject="updatePreferences.autoPreflightBeforeInject"
+            @check="checkPreflight()"
+            @repair="repairPreflight"
+            @toggle-auto-check="toggleAutoPreflightBeforeInject"
+          />
+
           <div class="script-meta-grid">
             <label>
               <span>脚本名称</span>
@@ -1591,58 +2130,39 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
             </label>
           </div>
 
-          <div class="variable-panel">
-            <label>
-              <span>packageName</span>
-              <input v-model="variablePackageName" type="text" placeholder="{{packageName}}" />
-            </label>
-            <label>
-              <span>moduleName</span>
-              <input v-model="variableModuleName" type="text" placeholder="{{moduleName}}" />
-            </label>
-            <label>
-              <span>functionName</span>
-              <input v-model="variableFunctionName" type="text" placeholder="{{functionName}}" />
-            </label>
-            <label>
-              <span>outputDir</span>
-              <input v-model="variableOutputDir" type="text" placeholder="{{outputDir}}" />
-            </label>
-            <button class="small-button strong" type="button" @click="applyVariablesToEditor">写入变量</button>
-          </div>
+          <ScriptParameterForm
+            :metadata="scriptMetadata"
+            :values="scriptParameterValues"
+            :loading="scriptMetadataLoading"
+            :error="scriptMetadataError"
+            @update-value="updateScriptParameter"
+          />
 
           <ScriptEditor v-model="editorSource" class="monaco-shell" language="javascript" @ready="onScriptEditorReady" />
         </div>
 
-        <div class="panel sessions-panel">
-          <div class="panel-header">
-            <div>
-              <h2>会话</h2>
-              <p>{{ runningSessions.length }} 个运行中</p>
-            </div>
-            <button class="icon-button" type="button" title="刷新会话" @click="refreshSessions">
-              <RefreshCw :size="17" />
-            </button>
-          </div>
+        <div
+          class="script-splitter"
+          role="separator"
+          tabindex="0"
+          aria-orientation="horizontal"
+          aria-label="调整脚本编辑器与独立日志高度"
+          title="拖拽调整脚本编辑器与独立日志高度"
+          @pointerdown="startScriptSplitResize"
+          @keydown="resizeScriptSplitByKeyboard"
+        ><span></span></div>
 
-          <div class="session-list">
-            <div v-if="sessions.length === 0" class="empty compact-empty">暂无会话</div>
-            <div v-for="session in sessions" :key="session.id" class="session-row">
-              <div>
-                <strong>{{ session.scriptName }}</strong>
-                <span>{{ session.mode }} · {{ session.target }}</span>
-              </div>
-              <button
-                class="icon-button danger"
-                type="button"
-                title="停止会话"
-                :disabled="!session.running"
-                @click="stopSession(session.id)"
-              >
-                <Square :size="16" />
-              </button>
-            </div>
-          </div>
+        <SessionPanel
+          :sessions="sessions"
+          :selected-id="selectedSessionID"
+          :logs="sessionLogs"
+          :busy="busy"
+          @refresh="refreshSessions"
+          @select="selectSession"
+          @stop="stopSession($event.id)"
+          @restart="restartSession"
+          @copy-error="copySessionError"
+        />
         </div>
       </section>
 
@@ -1851,6 +2371,7 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
   min-width: 0;
   min-height: 0;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .topbar {
@@ -1951,6 +2472,8 @@ function appendLocalLog(level: LogEntry["level"], source: string, message: strin
 
 .workspace {
   display: grid;
+  width: 100%;
+  flex: 1 1 auto;
   min-height: 0;
   gap: 16px;
   padding: 18px 22px;
@@ -2489,17 +3012,29 @@ td.empty {
 
 .script-layout {
   grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
-  height: 100%;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
   align-content: stretch;
+  overflow: hidden;
 }
 
 .script-list {
   display: flex;
   min-height: 0;
   flex-direction: column;
-  grid-row: 1 / 3;
+  grid-row: 1;
   overflow-y: auto;
+}
+
+.script-workbench {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  grid-column: 2;
+  grid-row: 1;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
 }
 
 .hub-tabs {
@@ -2686,15 +3221,52 @@ td.empty {
 }
 
 .editor-panel {
-  display: grid;
+  display: flex;
   min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  grid-template-rows: auto auto auto auto auto;
+  min-height: 300px;
+  flex: 1 1 0;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.script-workbench.has-editor-pane-size .editor-panel {
+  height: var(--editor-pane-size);
+  flex: 0 1 var(--editor-pane-size);
+}
+
+.script-splitter {
+  display: grid;
+  flex: 0 0 12px;
+  min-height: 12px;
+  place-items: center;
+  cursor: ns-resize;
+  background: #e7edf0;
+  border: 1px solid #cfd9dd;
+  border-radius: 6px;
+  touch-action: none;
+}
+
+.script-splitter span {
+  width: 48px;
+  height: 3px;
+  background: #87989f;
+  border-radius: 999px;
+}
+
+.script-splitter:hover,
+.script-splitter:focus-visible {
+  background: #d8eee8;
+  border-color: #76bca9;
+  outline: none;
+}
+
+.script-splitter:hover span,
+.script-splitter:focus-visible span {
+  background: #168a73;
 }
 
 .editor-panel.codeshare-active {
-  grid-template-rows: auto auto auto auto auto auto;
+  flex-basis: 0;
 }
 
 .codeshare-meta {
@@ -2779,59 +3351,11 @@ td.empty {
   min-width: 220px;
 }
 
-.variable-panel {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(130px, 1fr)) auto;
-  align-items: end;
-  gap: 10px;
-  padding: 12px 16px;
-  background: #f6f8fa;
-  border-bottom: 1px solid #e7ebf0;
-}
-
 .monaco-shell {
+  width: 100%;
   min-height: 300px;
+  flex: 0 0 auto;
   overflow: hidden;
-}
-
-.sessions-panel {
-  min-height: 190px;
-}
-
-.session-list {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-}
-
-.session-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 36px;
-  align-items: center;
-  gap: 10px;
-  min-height: 46px;
-  padding: 0 8px 0 10px;
-  background: #f8fafc;
-  border: 1px solid #e3e8ee;
-  border-radius: 8px;
-}
-
-.session-row div {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.session-row strong,
-.session-row span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session-row span {
-  color: #6d7985;
-  font-size: 12px;
 }
 
 .log-console {
@@ -2942,9 +3466,13 @@ td.empty {
   .grid-2,
   .script-layout,
   .run-grid,
-  .script-meta-grid,
-  .variable-panel {
+  .script-meta-grid {
     grid-template-columns: 1fr;
+  }
+
+  .script-layout {
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: auto;
   }
 
   .diagnostic-banner {
@@ -2958,6 +3486,13 @@ td.empty {
 
   .script-list {
     grid-row: auto;
+    max-height: 420px;
+  }
+
+  .script-workbench {
+    grid-column: 1;
+    grid-row: 2;
+    min-height: 640px;
   }
 
   .span-2 {

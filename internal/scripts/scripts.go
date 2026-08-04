@@ -97,11 +97,15 @@ if (Java.available) {
 			Name:        "Memory 扫描与补丁模板",
 			Category:    "高阶 Native",
 			Description: "使用 Memory.scan 搜索特征码，并可选 patch 命中地址附近的字节。",
-			Source: nativeModuleLoader + `const moduleName = ""; // example: "libtarget.so"; leave empty to scan readable ranges
-const pattern = "64 65 78 0a 30 ?? ?? 00"; // DEX magic example: dex\n0xx\0
-const maxMatches = 16;
-const patchEnabled = false;
-const patchOffset = 0;
+			Source: nativeModuleLoader + `/*
+@frida-gui
+{"name":"Memory 扫描参数","description":"设置扫描范围、特征码与可选补丁。模块名留空时扫描全部只读内存。","parameters":[{"name":"moduleName","label":"模块名","placeholder":"libtarget.so（可留空）","type":"string","default":""},{"name":"pattern","label":"特征码","type":"string","required":true,"default":"64 65 78 0a 30 ?? ?? 00"},{"name":"maxMatches","label":"最大命中数","type":"number","required":true,"default":16},{"name":"patchEnabled","label":"启用补丁","type":"boolean","default":false},{"name":"patchOffset","label":"补丁偏移","type":"number","default":0}]}
+*/
+const moduleName = {{moduleName}}; // example: "libtarget.so"; leave empty to scan readable ranges
+const pattern = {{pattern}}; // DEX magic example: dex\n0xx\0
+const maxMatches = {{maxMatches}};
+const patchEnabled = {{patchEnabled}};
+const patchOffset = {{patchOffset}};
 const patchBytes = [0x00, 0x00, 0x80, 0xd2]; // arm64: mov x0, #0
 
 let matches = 0;
@@ -156,10 +160,14 @@ if (moduleName.length > 0) {
 			Name:        "DEX 内存扫描与 Dump",
 			Category:    "高阶 Native",
 			Description: "扫描内存中的 DEX magic，按 header file_size 写出到 /data/local/tmp。",
-			Source: `const outputDir = "/data/local/tmp/frida-dexdump";
-const maxDexSize = 64 * 1024 * 1024;
-const maxDumps = 8;
-const pattern = "64 65 78 0a 30 ?? ?? 00";
+			Source: `/*
+@frida-gui
+{"name":"DEX Dump 参数","description":"配置输出目录、DEX 大小上限和最大导出数量。","parameters":[{"name":"outputDir","label":"输出目录","type":"string","required":true,"default":"/data/local/tmp/frida-dexdump"},{"name":"maxDexSize","label":"单个 DEX 最大字节数","type":"number","required":true,"default":67108864},{"name":"maxDumps","label":"最大导出数量","type":"number","required":true,"default":8},{"name":"pattern","label":"DEX 特征码","type":"string","required":true,"default":"64 65 78 0a 30 ?? ?? 00"}]}
+*/
+const outputDir = {{outputDir}};
+const maxDexSize = {{maxDexSize}};
+const maxDumps = {{maxDumps}};
+const pattern = {{pattern}};
 
 function mkdir(path) {
     try {
@@ -216,9 +224,13 @@ console.log("[dexdump] scan submitted");
 			Name:        "Stalker Native 执行流追踪",
 			Category:    "高阶 Trace",
 			Description: "在目标 native 导出函数进入时追踪当前线程的 call/block 汇总。",
-			Source: nativeModuleLoader + `const moduleName = "libc.so";
-const exportName = "open";
-const traceMs = 1500;
+			Source: nativeModuleLoader + `/*
+@frida-gui
+{"name":"Stalker Trace 参数","parameters":[{"name":"moduleName","label":"模块名","type":"string","required":true,"default":"libc.so"},{"name":"exportName","label":"导出函数","type":"string","required":true,"default":"open"},{"name":"traceMs","label":"追踪时长（毫秒）","type":"number","required":true,"default":1500}]}
+*/
+const moduleName = {{moduleName}};
+const exportName = {{exportName}};
+const traceMs = {{traceMs}};
 
 hookNowOrOnLoad(moduleName, function (mod) {
     try {
@@ -302,9 +314,13 @@ hookNowOrOnLoad(moduleName, function (mod) {
 			Name:        "NativeFunction 与 RPC",
 			Category:    "高阶 Native",
 			Description: "把 App 内 native 函数包装成本地可调用函数，并通过 rpc.exports 暴露。",
-			Source: nativeModuleLoader + `const moduleName = "libc.so";
-const exportName = "strlen";
-const returnType = "ulong";
+			Source: nativeModuleLoader + `/*
+@frida-gui
+{"name":"NativeFunction RPC 参数","parameters":[{"name":"moduleName","label":"模块名","type":"string","required":true,"default":"libc.so"},{"name":"exportName","label":"导出函数","type":"string","required":true,"default":"strlen"},{"name":"returnType","label":"返回类型","type":"select","required":true,"default":"ulong","options":["int","uint","long","ulong","pointer"]},{"name":"sample","label":"示例字符串","type":"string","required":true,"default":"frida-rpc"}]}
+*/
+const moduleName = {{moduleName}};
+const exportName = {{exportName}};
+const returnType = {{returnType}};
 const argTypes = ["pointer"];
 
 hookNowOrOnLoad(moduleName, function (mod) {
@@ -321,7 +337,7 @@ hookNowOrOnLoad(moduleName, function (mod) {
             }
         };
 
-        const sample = "frida-rpc";
+const sample = {{sample}};
         const result = nativeCall(Memory.allocUtf8String(sample));
         console.log("[rpc] local test strlen('" + sample + "')=" + result);
     } catch (err) {
@@ -335,9 +351,13 @@ hookNowOrOnLoad(moduleName, function (mod) {
 			Name:        "Interceptor.replace 与 Writer",
 			Category:    "高阶 Patch",
 			Description: "用 Interceptor.replace 或 Arm64Writer 替换 native 函数入口。",
-			Source: nativeModuleLoader + `const moduleName = "libtarget.so";
-const exportName = "target_function";
-const useArm64Writer = false;
+			Source: nativeModuleLoader + `/*
+@frida-gui
+{"name":"Interceptor.replace 参数","parameters":[{"name":"moduleName","label":"模块名","type":"string","required":true,"default":"libtarget.so"},{"name":"exportName","label":"导出函数","type":"string","required":true,"default":"target_function"},{"name":"useArm64Writer","label":"使用 Arm64Writer","type":"boolean","default":false}]}
+*/
+const moduleName = {{moduleName}};
+const exportName = {{exportName}};
+const useArm64Writer = {{useArm64Writer}};
 
 hookNowOrOnLoad(moduleName, function (mod) {
     try {
@@ -478,9 +498,13 @@ hookNowOrOnLoad(moduleName, function (mod) {
 			Name:        "已加载类枚举",
 			Category:    "信息探测",
 			Description: "按关键字过滤并打印当前 Java 运行时已加载类。",
-			Source: `if (Java.available) {
+			Source: `/*
+@frida-gui
+{"name":"已加载类过滤","parameters":[{"name":"keyword","label":"类名关键词","placeholder":"留空显示全部","type":"string","default":""}]}
+*/
+if (Java.available) {
     Java.perform(function () {
-        const keyword = "";
+            const keyword = {{keyword}};
         Java.enumerateLoadedClasses({
             onMatch: function (className) {
                 if (!keyword || className.indexOf(keyword) !== -1) {

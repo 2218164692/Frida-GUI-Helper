@@ -15,9 +15,12 @@ A Windows desktop helper for using Frida with Android devices. It wraps common A
 - Import local `.js`, `.mjs`, or `.ts` Frida scripts and run them from the editor.
 - Native templates wait for target modules, including Spawn and delayed `.so` loading.
 - CodeShare scripts are loaded for review first and trusted by fingerprint only when run.
-- Session exits are synchronized to the UI and removed from the active session list.
+- Run Profiles save the device, target, Attach/Spawn mode, script snapshot, parameters, and server path, with one-click execution of the last successful configuration.
+- Pre-injection checks validate ADB authorization, Root, ABI, the managed CLI, server state/version, and target availability. Checks are manual by default, with an optional persisted switch to run them before every injection; the matching server can be pushed and restarted in one click.
+- Each session retains its own stdout/stderr, exit reason, and duration, with reinjection and error-copy actions.
+- Scripts can declare typed `@frida-gui` metadata so the UI generates parameter forms and safely renders JavaScript literals.
 - The installer ships the latest official Frida available at build time plus Android servers for arm64, arm, x86_64, and x86. The Devices page validates and pushes the matching same-version server by ABI.
-- A Settings page checks application and official Frida updates and controls startup checks, Frida component auto-update, and update notifications.
+- A Settings page checks application and official Frida updates and controls startup checks, Frida component auto-update, update notifications, and automatic injection preflight.
 - Real-time stdout/stderr log console with filtering, clearing, and export.
 - Diagnostics for ADB, Frida CLI, device ABI, Root, server version, server process, and official `frida-ps -U` smoke test.
 
@@ -40,7 +43,17 @@ Advanced templates:
 - Native calls and RPC with `NativeFunction` and `rpc.exports`
 - Native replacement with `Interceptor.replace` and `Arm64Writer`
 
-All templates are editable before injection. Advanced templates contain placeholders for module names, exported symbols, signatures, return types, and patch bytes.
+All templates are editable before injection. Common advanced-template values are exposed as generated forms; values such as raw patch bytes can still be edited directly.
+
+Custom scripts can define the same form metadata. Placeholders must not be wrapped in extra quotes because values are rendered as safe JavaScript literals:
+
+```javascript
+/*
+@frida-gui
+{"name":"Module probe","parameters":[{"name":"moduleName","label":"Module","type":"string","required":true,"default":"libfoo.so"}]}
+*/
+const moduleName = {{moduleName}};
+```
 
 ## Requirements
 
@@ -133,7 +146,7 @@ $env:GOFLAGS="-buildvcs=false"
 .\tools\build-installer.ps1 -Architecture amd64
 ```
 
-The build host also needs Wails v2.12 and NSIS. The release artifact is generated as `build/bin/Frida-GUI-Helper-v1.0.8-windows-amd64-setup.exe`.
+The build host also needs Wails v2.12 and NSIS. The release artifact is generated as `build/bin/Frida-GUI-Helper-v1.0.9-windows-amd64-setup.exe`.
 
 ## Troubleshooting
 

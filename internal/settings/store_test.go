@@ -83,6 +83,9 @@ func TestLoadMergesMissingFieldsWithDefaults(t *testing.T) {
 	if !got.NotifyWhenAvailable {
 		t.Fatal("missing notification setting did not receive its default")
 	}
+	if got.AutoPreflightBeforeInject {
+		t.Fatal("missing preflight setting should default to manual mode")
+	}
 }
 
 func TestLoadRecoversCorruptFile(t *testing.T) {

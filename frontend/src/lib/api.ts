@@ -82,6 +82,7 @@ export interface UpdatePreferences {
   autoCheckFridaUpdates: boolean;
   autoUpdateFrida: boolean;
   notifyWhenUpdateAvailable: boolean;
+  autoPreflightBeforeInject: boolean;
 }
 
 export interface ComponentUpdateStatus {
@@ -210,7 +211,88 @@ export interface SessionInfo {
   target: string;
   scriptName: string;
   startedAt: string;
+  endedAt?: string;
+  durationMs: number;
+  exitReason?: string;
+  exitCode?: number | null;
+  error?: string;
+  logCount: number;
   running: boolean;
+  stopping: boolean;
+}
+
+export interface SessionLogEntry {
+  sessionId: string;
+  sequence: number;
+  timestamp: string;
+  stream: "stdout" | "stderr" | "system";
+  message: string;
+}
+
+export interface RunProfile {
+  id: string;
+  name: string;
+  deviceSerial: string;
+  packageName: string;
+  mode: "attach" | "spawn";
+  targetKind: "pid" | "name" | "package";
+  target: string;
+  scriptID: string;
+  scriptName: string;
+  scriptSource: string;
+  variables: Record<string, string>;
+  serverPath: string;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt: string;
+}
+
+export type SaveRunProfileRequest = Omit<RunProfile, "createdAt" | "updatedAt" | "lastRunAt">;
+
+export interface PreflightRequest {
+  deviceSerial: string;
+  mode: "attach" | "spawn";
+  targetKind: "pid" | "name" | "package";
+  target: string;
+  serverPath: string;
+}
+
+export interface PreflightCheck {
+  id: string;
+  label: string;
+  status: "pass" | "fail" | "warning";
+  message: string;
+  action: string;
+}
+
+export interface PreflightResult {
+  ready: boolean;
+  deviceSerial: string;
+  abi: string;
+  cliVersion: string;
+  serverVersion: string;
+  serverPath: string;
+  targetAvailable: boolean;
+  checkedAt: string;
+  checks: PreflightCheck[];
+}
+
+export interface ScriptParameter {
+  name: string;
+  label: string;
+  description: string;
+  type: "string" | "number" | "boolean" | "select";
+  required: boolean;
+  default?: unknown;
+  hasDefault: boolean;
+  options: string[];
+  placeholder: string;
+}
+
+export interface ScriptMetadata {
+  name: string;
+  description: string;
+  parameters: ScriptParameter[];
 }
 
 export interface FridaServerRequest {
@@ -227,6 +309,7 @@ export interface RunScriptRequest {
   target: string;
   scriptName: string;
   scriptSource: string;
+  variables: Record<string, string | number | boolean>;
 }
 
 export interface RunOperationRequest {
@@ -318,7 +401,8 @@ const mockBackend: BackendApp = {
       autoCheckAppUpdates: true,
       autoCheckFridaUpdates: true,
       autoUpdateFrida: false,
-      notifyWhenUpdateAvailable: true
+      notifyWhenUpdateAvailable: true,
+      autoPreflightBeforeInject: false
     } satisfies UpdatePreferences;
   },
   async SaveSettings(...args: unknown[]) {
@@ -412,6 +496,72 @@ const mockBackend: BackendApp = {
   async RunOperation() {
     return undefined;
   },
+  async ListProfiles() {
+    return [] satisfies RunProfile[];
+  },
+  async SaveProfile(...args: unknown[]) {
+    const request = args[0] as SaveRunProfileRequest;
+    const now = new Date().toISOString();
+    return {
+      ...request,
+      id: request.id || "preview-profile",
+      createdAt: now,
+      updatedAt: now,
+      lastRunAt: ""
+    } satisfies RunProfile;
+  },
+  async DeleteProfile() {
+    return undefined;
+  },
+  async GetLastProfile() {
+    return null;
+  },
+  async MarkProfileRun(...args: unknown[]) {
+    const id = String(args[0] || "preview-profile");
+    return {
+      id,
+      name: "预览配置",
+      deviceSerial: "",
+      packageName: "",
+      mode: "attach",
+      targetKind: "name",
+      target: "preview",
+      scriptID: "mock",
+      scriptName: "示例脚本",
+      scriptSource: mockScripts[0].source,
+      variables: {},
+      serverPath: "/data/local/tmp/frida-server",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastRunAt: new Date().toISOString()
+    } satisfies RunProfile;
+  },
+  async RunPreflight(...args: unknown[]) {
+    const request = args[0] as PreflightRequest;
+    return {
+      ready: false,
+      deviceSerial: request.deviceSerial,
+      abi: "",
+      cliVersion: "",
+      serverVersion: "",
+      serverPath: request.serverPath,
+      targetAvailable: false,
+      checkedAt: new Date().toISOString(),
+      checks: [{
+        id: "backend",
+        label: "Wails 后端",
+        status: "fail",
+        message: "Wails 后端未连接",
+        action: "请运行桌面程序"
+      }]
+    } satisfies PreflightResult;
+  },
+  async RestartFridaServerAndCheck(...args: unknown[]) {
+    return mockBackend.RunPreflight(...args);
+  },
+  async GetScriptMetadata() {
+    return null;
+  },
   async RunScript() {
     return {
       id: "preview",
@@ -421,7 +571,14 @@ const mockBackend: BackendApp = {
       target: "preview",
       scriptName: "示例脚本",
       startedAt: new Date().toISOString(),
-      running: false
+      endedAt: new Date().toISOString(),
+      durationMs: 0,
+      exitReason: "preview",
+      exitCode: 0,
+      error: "",
+      logCount: 0,
+      running: false,
+      stopping: false
     } satisfies SessionInfo;
   },
   async StopSession() {
@@ -429,6 +586,12 @@ const mockBackend: BackendApp = {
   },
   async ListSessions() {
     return [] satisfies SessionInfo[];
+  },
+  async GetSessionLogs() {
+    return [] satisfies SessionLogEntry[];
+  },
+  async RestartSession() {
+    return mockBackend.RunScript();
   },
   async GetLogs() {
     return [] satisfies LogEntry[];
@@ -486,9 +649,20 @@ export const api = {
     invoke<void>("TrustCodeShareProject", projectRef, fingerprint),
   listOperations: () => invokeArray<OperationTemplate>("ListOperations"),
   runOperation: (request: RunOperationRequest) => invoke<void>("RunOperation", request),
+  listProfiles: () => invokeArray<RunProfile>("ListProfiles"),
+  saveProfile: (request: SaveRunProfileRequest) => invoke<RunProfile>("SaveProfile", request),
+  deleteProfile: (id: string) => invoke<void>("DeleteProfile", id),
+  getLastProfile: () => invoke<RunProfile | null>("GetLastProfile"),
+  markProfileRun: (id: string) => invoke<RunProfile>("MarkProfileRun", id),
+  runPreflight: (request: PreflightRequest) => invoke<PreflightResult>("RunPreflight", request),
+  restartFridaServerAndCheck: (request: PreflightRequest) =>
+    invoke<PreflightResult>("RestartFridaServerAndCheck", request),
+  getScriptMetadata: (source: string) => invoke<ScriptMetadata | null>("GetScriptMetadata", source),
   runScript: (request: RunScriptRequest) => invoke<SessionInfo>("RunScript", request),
   stopSession: (sessionID: string) => invoke<void>("StopSession", sessionID),
   listSessions: () => invokeArray<SessionInfo>("ListSessions"),
+  getSessionLogs: (sessionID: string) => invokeArray<SessionLogEntry>("GetSessionLogs", sessionID),
+  restartSession: (sessionID: string) => invoke<SessionInfo>("RestartSession", sessionID),
   getLogs: () => invokeArray<LogEntry>("GetLogs"),
   clearLogs: () => invoke<void>("ClearLogs")
 };
@@ -507,6 +681,14 @@ export function subscribeSessionUpdates(handler: (session: SessionInfo) => void)
     return off;
   }
   return () => window.runtime?.EventsOff?.("session:updated");
+}
+
+export function subscribeSessionLogs(handler: (entry: SessionLogEntry) => void): () => void {
+  const off = window.runtime?.EventsOn?.("session:log", (entry) => handler(entry as SessionLogEntry));
+  if (typeof off === "function") {
+    return off;
+  }
+  return () => window.runtime?.EventsOff?.("session:log");
 }
 
 export function subscribeRuntimeProgress(handler: (progress: FridaRuntimeProgress) => void): () => void {

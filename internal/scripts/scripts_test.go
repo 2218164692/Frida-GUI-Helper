@@ -3,6 +3,8 @@ package scripts
 import (
 	"strings"
 	"testing"
+
+	"frida-gui-helper/internal/scriptparams"
 )
 
 func TestNativeTemplatesWaitForModuleLoad(t *testing.T) {
@@ -33,6 +35,19 @@ func TestNativeTemplatesWaitForModuleLoad(t *testing.T) {
 	for id := range nativeIDs {
 		if !seen[id] {
 			t.Errorf("native template %s not found", id)
+		}
+	}
+}
+
+func TestTemplateParameterMetadataRendersWithDefaults(t *testing.T) {
+	for _, template := range List() {
+		rendered, err := scriptparams.Render(template.Source, nil)
+		if err != nil {
+			t.Errorf("%s metadata or defaults are invalid: %v", template.ID, err)
+			continue
+		}
+		if strings.Contains(rendered, "{{") {
+			t.Errorf("%s leaves an unresolved parameter placeholder", template.ID)
 		}
 	}
 }

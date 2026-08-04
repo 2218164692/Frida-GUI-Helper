@@ -14,8 +14,16 @@ export function ClearLogs() {
   return window['go']['main']['App']['ClearLogs']();
 }
 
+export function ClearSessionHistory() {
+  return window['go']['main']['App']['ClearSessionHistory']();
+}
+
 export function DeleteLocalScript(arg1) {
   return window['go']['main']['App']['DeleteLocalScript'](arg1);
+}
+
+export function DeleteProfile(arg1) {
+  return window['go']['main']['App']['DeleteProfile'](arg1);
 }
 
 export function ExportDiagnosticBundle(arg1) {
@@ -34,8 +42,20 @@ export function GetFridaServerStatus(arg1) {
   return window['go']['main']['App']['GetFridaServerStatus'](arg1);
 }
 
+export function GetLastProfile() {
+  return window['go']['main']['App']['GetLastProfile']();
+}
+
 export function GetLogs() {
   return window['go']['main']['App']['GetLogs']();
+}
+
+export function GetScriptMetadata(arg1) {
+  return window['go']['main']['App']['GetScriptMetadata'](arg1);
+}
+
+export function GetSessionLogs(arg1) {
+  return window['go']['main']['App']['GetSessionLogs'](arg1);
 }
 
 export function GetSettings() {
@@ -74,12 +94,20 @@ export function ListProcesses(arg1) {
   return window['go']['main']['App']['ListProcesses'](arg1);
 }
 
+export function ListProfiles() {
+  return window['go']['main']['App']['ListProfiles']();
+}
+
 export function ListScripts() {
   return window['go']['main']['App']['ListScripts']();
 }
 
 export function ListSessions() {
   return window['go']['main']['App']['ListSessions']();
+}
+
+export function MarkProfileRun(arg1) {
+  return window['go']['main']['App']['MarkProfileRun'](arg1);
 }
 
 export function PrepareFridaRuntime(arg1) {
@@ -90,8 +118,20 @@ export function RecordLocalScriptRun(arg1) {
   return window['go']['main']['App']['RecordLocalScriptRun'](arg1);
 }
 
+export function RestartFridaServerAndCheck(arg1) {
+  return window['go']['main']['App']['RestartFridaServerAndCheck'](arg1);
+}
+
+export function RestartSession(arg1) {
+  return window['go']['main']['App']['RestartSession'](arg1);
+}
+
 export function RunOperation(arg1) {
   return window['go']['main']['App']['RunOperation'](arg1);
+}
+
+export function RunPreflight(arg1) {
+  return window['go']['main']['App']['RunPreflight'](arg1);
 }
 
 export function RunScript(arg1) {
@@ -100,6 +140,10 @@ export function RunScript(arg1) {
 
 export function SaveLocalScript(arg1) {
   return window['go']['main']['App']['SaveLocalScript'](arg1);
+}
+
+export function SaveProfile(arg1) {
+  return window['go']['main']['App']['SaveProfile'](arg1);
 }
 
 export function SaveSettings(arg1) {

@@ -15,9 +15,12 @@
 - 支持导入本地 `.js`、`.mjs`、`.ts` Frida 脚本并在编辑器中运行。
 - Native 模板会等待目标模块加载，兼容 Spawn 和延迟加载的 `.so`。
 - CodeShare 脚本先进入编辑器供审查，仅在运行时确认并记录源码指纹。
-- Frida 会话退出后会实时同步到界面，不保留失效的活动会话。
+- 运行配置 Profiles 会保存设备、目标、Attach/Spawn、脚本快照、参数和 server 路径，并可一键运行上次配置。
+- 注入前检查覆盖 ADB 授权、Root、ABI、内置 CLI、server 状态/版本和目标进程；默认由用户手动触发，也可持久化开启“每次注入前自动检查”，并支持一键推送及重启同版本 server。
+- 每个 Frida 会话独立保留 stdout/stderr、退出原因和运行时长，并支持重新注入与复制错误信息。
+- 脚本可通过 `@frida-gui` 元数据声明参数，由界面自动生成类型化表单并安全写入 JavaScript 字面量。
 - 安装包自带构建时的官方最新版 Frida CLI，以及 arm64、arm、x86_64、x86 四种 Android `frida-server`；连接设备后按 ABI 自动校验、推送并启动同版本文件。
-- 设置页可检查 Frida GUI Helper 与 Frida 官方更新，并可配置启动时自动检查、Frida 组件自动更新和更新提示。
+- 设置页可检查 Frida GUI Helper 与 Frida 官方更新，并可配置启动时自动检查、Frida 组件自动更新、更新提示和注入前自动检查。
 - 实时日志控制台，支持过滤、清空和导出。
 - 提供 ADB、Frida CLI、设备 ABI、Root、server 版本、server 进程、官方 `frida-ps -U` smoke test 等诊断操作。
 
@@ -40,7 +43,17 @@
 - 使用 `NativeFunction` 和 `rpc.exports` 进行 Native 调用与 RPC
 - 使用 `Interceptor.replace` 和 `Arm64Writer` 替换 Native 函数
 
-所有模板在注入前都可以编辑。高阶模板默认包含占位参数，使用前需要根据目标修改模块名、导出函数名、特征码、返回类型和 patch 字节等内容。
+所有模板在注入前都可以编辑。高阶模板的常用参数会显示为表单，不再需要直接修改 `packageName`、`moduleName` 等源码变量；不适合表单表达的 patch 字节等内容仍可在编辑器中调整。
+
+自定义脚本也可以声明参数表单。占位符不要额外添加引号，运行时会按参数类型生成安全的 JavaScript 字面量：
+
+```javascript
+/*
+@frida-gui
+{"name":"模块检查","parameters":[{"name":"moduleName","label":"模块名","type":"string","required":true,"default":"libfoo.so"}]}
+*/
+const moduleName = {{moduleName}};
+```
 
 ## 环境要求
 
@@ -138,7 +151,7 @@ $env:GOFLAGS="-buildvcs=false"
 构建机还需要 Wails v2.12 和 NSIS。最终发布物位于：
 
 ```text
-build/bin/Frida-GUI-Helper-v1.0.8-windows-amd64-setup.exe
+build/bin/Frida-GUI-Helper-v1.0.9-windows-amd64-setup.exe
 ```
 
 ## 常见问题排查

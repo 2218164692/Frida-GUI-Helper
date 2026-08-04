@@ -25,6 +25,7 @@ interface UpdatePreferences {
   autoCheckFridaUpdates: boolean;
   autoUpdateFrida: boolean;
   notifyWhenUpdateAvailable: boolean;
+  autoPreflightBeforeInject: boolean;
 }
 
 interface Props {
@@ -327,6 +328,22 @@ function setPreference(key: keyof UpdatePreferences, value: boolean) {
               :aria-checked="preferences.notifyWhenUpdateAvailable"
               :disabled="savingPreferences"
               @click="setPreference('notifyWhenUpdateAvailable', !preferences.notifyWhenUpdateAvailable)"
+            ><span></span></button>
+          </div>
+
+          <div class="preference-row">
+            <div>
+              <strong>注入前自动检查环境</strong>
+              <span>开启后每次注入都会检查设备、Root、ABI、server 和目标进程；关闭后可手动检查</span>
+            </div>
+            <button
+              class="switch"
+              :class="{ enabled: preferences.autoPreflightBeforeInject }"
+              type="button"
+              role="switch"
+              :aria-checked="preferences.autoPreflightBeforeInject"
+              :disabled="savingPreferences"
+              @click="setPreference('autoPreflightBeforeInject', !preferences.autoPreflightBeforeInject)"
             ><span></span></button>
           </div>
         </div>

@@ -18,7 +18,9 @@ import (
 	"frida-gui-helper/internal/logstream"
 	"frida-gui-helper/internal/operations"
 	"frida-gui-helper/internal/processutil"
+	"frida-gui-helper/internal/profiles"
 	runtimeenv "frida-gui-helper/internal/runtime"
+	"frida-gui-helper/internal/scriptparams"
 	"frida-gui-helper/internal/scripts"
 	"frida-gui-helper/internal/scriptstore"
 	appsettings "frida-gui-helper/internal/settings"
@@ -35,6 +37,7 @@ type App struct {
 	frida            *frida.Runner
 	codeShare        *codeshare.Client
 	scripts          *scriptstore.Store
+	profiles         *profiles.Store
 	tools            *toolchain.Resolver
 	runtime          *runtimeenv.Manager
 	settings         *appsettings.Store
@@ -82,12 +85,13 @@ type FridaRuntimeRequest struct {
 }
 
 type RunScriptRequest struct {
-	DeviceSerial string `json:"deviceSerial"`
-	Mode         string `json:"mode"`
-	TargetKind   string `json:"targetKind"`
-	Target       string `json:"target"`
-	ScriptName   string `json:"scriptName"`
-	ScriptSource string `json:"scriptSource"`
+	DeviceSerial string                 `json:"deviceSerial"`
+	Mode         string                 `json:"mode"`
+	TargetKind   string                 `json:"targetKind"`
+	Target       string                 `json:"target"`
+	ScriptName   string                 `json:"scriptName"`
+	ScriptSource string                 `json:"scriptSource"`
+	Variables    map[string]interface{} `json:"variables"`
 }
 
 type RunOperationRequest struct {
@@ -123,6 +127,11 @@ func NewApp() *App {
 		settingsStore = appsettings.NewAt(filepath.Join(os.TempDir(), "Frida-GUI-Helper", "settings.json"))
 	}
 	app.settings = settingsStore
+	profileStore, err := profiles.New()
+	if err != nil {
+		profileStore = profiles.NewAt(filepath.Join(os.TempDir(), "Frida-GUI-Helper", "profiles.json"))
+	}
+	app.profiles = profileStore
 	app.updates = updater.NewChecker()
 	app.appUpdate = updater.ComponentStatus{
 		Component:      updater.ComponentApplication,
@@ -149,6 +158,9 @@ func (a *App) startup(ctx context.Context) {
 	a.frida.SetSessionEmitter(func(info frida.SessionInfo) {
 		wailsRuntime.EventsEmit(ctx, "session:updated", info)
 	})
+	a.frida.SetSessionLogEmitter(func(entry frida.SessionLogEntry) {
+		wailsRuntime.EventsEmit(ctx, "session:log", entry)
+	})
 	a.runtime.SetProgressEmitter(func(progress runtimeenv.Progress) {
 		wailsRuntime.EventsEmit(ctx, "runtime:progress", progress)
 	})
@@ -158,11 +170,14 @@ func (a *App) startup(ctx context.Context) {
 
 func (a *App) shutdown(ctx context.Context) {
 	a.frida.SetSessionEmitter(nil)
+	a.frida.SetSessionLogEmitter(nil)
 	a.runtime.SetProgressEmitter(nil)
-	a.frida.StopAll()
 	if a.cancel != nil {
 		a.cancel()
 	}
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopCancel()
+	a.frida.StopAllAndWait(stopCtx)
 }
 
 func (a *App) GetSystemStatus() SystemStatus {
@@ -346,7 +361,7 @@ func (a *App) CheckFridaUpdate() (updater.ComponentStatus, error) {
 }
 
 func (a *App) UpdateFridaComponent() (runtimeenv.Status, error) {
-	if len(a.frida.ListSessions()) > 0 {
+	if a.hasRunningFridaSessions() {
 		return runtimeenv.Status{}, errors.New("请先停止全部 Frida 脚本会话，再更新组件")
 	}
 	latest, err := a.CheckFridaUpdate()
@@ -360,7 +375,7 @@ func (a *App) UpdateFridaComponent() (runtimeenv.Status, error) {
 		return runtimeenv.Status{}, errors.New("Frida 组件正在使用或已有更新任务正在运行")
 	}
 	defer a.fridaComponentMu.Unlock()
-	if len(a.frida.ListSessions()) > 0 {
+	if a.hasRunningFridaSessions() {
 		return runtimeenv.Status{}, errors.New("请先停止全部 Frida 脚本会话，再更新组件")
 	}
 	ctx, cancel := a.withTimeout(20 * time.Minute)
@@ -720,14 +735,23 @@ func (a *App) RunScript(req RunScriptRequest) (frida.SessionInfo, error) {
 	}
 	defer a.fridaComponentMu.RUnlock()
 
+	prepared, err := scriptparams.Prepare(req.ScriptSource, req.Variables)
+	if err != nil {
+		return frida.SessionInfo{}, fmt.Errorf("脚本参数无效: %w", err)
+	}
+
 	return a.frida.RunScript(a.baseContext(), frida.RunRequest{
 		DeviceSerial: req.DeviceSerial,
 		Mode:         req.Mode,
 		TargetKind:   req.TargetKind,
 		Target:       req.Target,
 		ScriptName:   req.ScriptName,
-		ScriptSource: req.ScriptSource,
+		ScriptSource: prepared.Source,
 	})
+}
+
+func (a *App) GetScriptMetadata(source string) (*scriptparams.Metadata, error) {
+	return scriptparams.Parse(source)
 }
 
 func (a *App) StopSession(sessionID string) error {
@@ -736,6 +760,31 @@ func (a *App) StopSession(sessionID string) error {
 
 func (a *App) ListSessions() []frida.SessionInfo {
 	return a.frida.ListSessions()
+}
+
+func (a *App) GetSessionLogs(sessionID string) ([]frida.SessionLogEntry, error) {
+	return a.frida.GetSessionLogs(sessionID)
+}
+
+func (a *App) RestartSession(sessionID string) (frida.SessionInfo, error) {
+	if !a.fridaComponentMu.TryRLock() {
+		return frida.SessionInfo{}, errors.New("Frida 组件正在更新，请稍后再重新注入")
+	}
+	defer a.fridaComponentMu.RUnlock()
+	return a.frida.RestartSession(a.baseContext(), sessionID)
+}
+
+func (a *App) ClearSessionHistory() int {
+	return a.frida.ClearSessionHistory()
+}
+
+func (a *App) hasRunningFridaSessions() bool {
+	for _, session := range a.frida.ListSessions() {
+		if session.Running {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) GetLogs() []logstream.Entry {

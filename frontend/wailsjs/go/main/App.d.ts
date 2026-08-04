@@ -4,13 +4,15 @@ import {updater} from '../models';
 import {codeshare} from '../models';
 import {runtime} from '../models';
 import {main} from '../models';
+import {profiles} from '../models';
 import {logstream} from '../models';
+import {scriptparams} from '../models';
+import {frida} from '../models';
 import {settings} from '../models';
 import {adb} from '../models';
 import {scriptstore} from '../models';
 import {operations} from '../models';
 import {scripts} from '../models';
-import {frida} from '../models';
 
 export function CheckApplicationUpdate():Promise<updater.ComponentStatus>;
 
@@ -18,7 +20,11 @@ export function CheckFridaUpdate():Promise<updater.ComponentStatus>;
 
 export function ClearLogs():Promise<void>;
 
+export function ClearSessionHistory():Promise<number>;
+
 export function DeleteLocalScript(arg1:string):Promise<void>;
+
+export function DeleteProfile(arg1:string):Promise<void>;
 
 export function ExportDiagnosticBundle(arg1:string):Promise<string>;
 
@@ -28,7 +34,13 @@ export function GetFridaRuntimeStatus():Promise<runtime.Status>;
 
 export function GetFridaServerStatus(arg1:string):Promise<main.FridaServerStatus>;
 
+export function GetLastProfile():Promise<profiles.Profile>;
+
 export function GetLogs():Promise<Array<logstream.Entry>>;
+
+export function GetScriptMetadata(arg1:string):Promise<scriptparams.Metadata>;
+
+export function GetSessionLogs(arg1:string):Promise<Array<frida.SessionLogEntry>>;
 
 export function GetSettings():Promise<settings.Settings>;
 
@@ -48,19 +60,31 @@ export function ListOperations():Promise<Array<operations.Template>>;
 
 export function ListProcesses(arg1:string):Promise<Array<adb.Process>>;
 
+export function ListProfiles():Promise<Array<profiles.Profile>>;
+
 export function ListScripts():Promise<Array<scripts.Template>>;
 
 export function ListSessions():Promise<Array<frida.SessionInfo>>;
+
+export function MarkProfileRun(arg1:string):Promise<profiles.Profile>;
 
 export function PrepareFridaRuntime(arg1:main.FridaRuntimeRequest):Promise<runtime.Status>;
 
 export function RecordLocalScriptRun(arg1:string):Promise<void>;
 
+export function RestartFridaServerAndCheck(arg1:main.PreflightRequest):Promise<main.PreflightResult>;
+
+export function RestartSession(arg1:string):Promise<frida.SessionInfo>;
+
 export function RunOperation(arg1:main.RunOperationRequest):Promise<void>;
+
+export function RunPreflight(arg1:main.PreflightRequest):Promise<main.PreflightResult>;
 
 export function RunScript(arg1:main.RunScriptRequest):Promise<frida.SessionInfo>;
 
 export function SaveLocalScript(arg1:main.SaveLocalScriptRequest):Promise<scriptstore.Script>;
+
+export function SaveProfile(arg1:profiles.SaveRequest):Promise<profiles.Profile>;
 
 export function SaveSettings(arg1:settings.Settings):Promise<settings.Settings>;
 

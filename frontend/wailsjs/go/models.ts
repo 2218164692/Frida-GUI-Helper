@@ -233,7 +233,14 @@ export namespace frida {
 	    target: string;
 	    scriptName: string;
 	    startedAt: string;
+	    endedAt?: string;
+	    durationMs: number;
+	    exitReason?: string;
+	    exitCode?: number;
+	    error?: string;
+	    logCount: number;
 	    running: boolean;
+	    stopping: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
@@ -248,7 +255,34 @@ export namespace frida {
 	        this.target = source["target"];
 	        this.scriptName = source["scriptName"];
 	        this.startedAt = source["startedAt"];
+	        this.endedAt = source["endedAt"];
+	        this.durationMs = source["durationMs"];
+	        this.exitReason = source["exitReason"];
+	        this.exitCode = source["exitCode"];
+	        this.error = source["error"];
+	        this.logCount = source["logCount"];
 	        this.running = source["running"];
+	        this.stopping = source["stopping"];
+	    }
+	}
+	export class SessionLogEntry {
+	    sessionId: string;
+	    sequence: number;
+	    timestamp: string;
+	    stream: string;
+	    message: string;
+
+	    static createFrom(source: any = {}) {
+	        return new SessionLogEntry(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.sequence = source["sequence"];
+	        this.timestamp = source["timestamp"];
+	        this.stream = source["stream"];
+	        this.message = source["message"];
 	    }
 	}
 	export class ToolStatus {
@@ -397,6 +431,92 @@ export namespace main {
 	        this.source = source["source"];
 	    }
 	}
+	export class PreflightCheck {
+	    id: string;
+	    label: string;
+	    status: string;
+	    message: string;
+	    action: string;
+
+	    static createFrom(source: any = {}) {
+	        return new PreflightCheck(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.label = source["label"];
+	        this.status = source["status"];
+	        this.message = source["message"];
+	        this.action = source["action"];
+	    }
+	}
+	export class PreflightRequest {
+	    deviceSerial: string;
+	    mode: string;
+	    targetKind: string;
+	    target: string;
+	    serverPath: string;
+
+	    static createFrom(source: any = {}) {
+	        return new PreflightRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deviceSerial = source["deviceSerial"];
+	        this.mode = source["mode"];
+	        this.targetKind = source["targetKind"];
+	        this.target = source["target"];
+	        this.serverPath = source["serverPath"];
+	    }
+	}
+	export class PreflightResult {
+	    ready: boolean;
+	    deviceSerial: string;
+	    abi: string;
+	    cliVersion: string;
+	    serverVersion: string;
+	    serverPath: string;
+	    targetAvailable: boolean;
+	    checkedAt: string;
+	    checks: PreflightCheck[];
+
+	    static createFrom(source: any = {}) {
+	        return new PreflightResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ready = source["ready"];
+	        this.deviceSerial = source["deviceSerial"];
+	        this.abi = source["abi"];
+	        this.cliVersion = source["cliVersion"];
+	        this.serverVersion = source["serverVersion"];
+	        this.serverPath = source["serverPath"];
+	        this.targetAvailable = source["targetAvailable"];
+	        this.checkedAt = source["checkedAt"];
+	        this.checks = this.convertValues(source["checks"], PreflightCheck);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class RunOperationRequest {
 	    id: string;
 	    deviceSerial: string;
@@ -418,6 +538,7 @@ export namespace main {
 	    target: string;
 	    scriptName: string;
 	    scriptSource: string;
+	    variables: Record<string, any>;
 
 	    static createFrom(source: any = {}) {
 	        return new RunScriptRequest(source);
@@ -431,6 +552,7 @@ export namespace main {
 	        this.target = source["target"];
 	        this.scriptName = source["scriptName"];
 	        this.scriptSource = source["scriptSource"];
+	        this.variables = source["variables"];
 	    }
 	}
 	export class SaveLocalScriptRequest {
@@ -580,6 +702,85 @@ export namespace operations {
 
 }
 
+export namespace profiles {
+
+	export class Profile {
+	    id: string;
+	    name: string;
+	    deviceSerial: string;
+	    packageName: string;
+	    target: string;
+	    mode: string;
+	    targetKind: string;
+	    scriptName: string;
+	    scriptSource: string;
+	    scriptID: string;
+	    variables: Record<string, string>;
+	    serverPath: string;
+	    createdAt: string;
+	    updatedAt: string;
+	    lastRunAt: string;
+
+	    static createFrom(source: any = {}) {
+	        return new Profile(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.deviceSerial = source["deviceSerial"];
+	        this.packageName = source["packageName"];
+	        this.target = source["target"];
+	        this.mode = source["mode"];
+	        this.targetKind = source["targetKind"];
+	        this.scriptName = source["scriptName"];
+	        this.scriptSource = source["scriptSource"];
+	        this.scriptID = source["scriptID"];
+	        this.variables = source["variables"];
+	        this.serverPath = source["serverPath"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	        this.lastRunAt = source["lastRunAt"];
+	    }
+	}
+	export class SaveRequest {
+	    id: string;
+	    name: string;
+	    deviceSerial: string;
+	    packageName: string;
+	    target: string;
+	    mode: string;
+	    targetKind: string;
+	    scriptName: string;
+	    scriptSource: string;
+	    scriptID: string;
+	    variables: Record<string, string>;
+	    serverPath: string;
+
+	    static createFrom(source: any = {}) {
+	        return new SaveRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.deviceSerial = source["deviceSerial"];
+	        this.packageName = source["packageName"];
+	        this.target = source["target"];
+	        this.mode = source["mode"];
+	        this.targetKind = source["targetKind"];
+	        this.scriptName = source["scriptName"];
+	        this.scriptSource = source["scriptSource"];
+	        this.scriptID = source["scriptID"];
+	        this.variables = source["variables"];
+	        this.serverPath = source["serverPath"];
+	    }
+	}
+
+}
+
 export namespace runtime {
 
 	export class ToolStatus {
@@ -622,6 +823,73 @@ export namespace runtime {
 	        this.host = this.convertValues(source["host"], ToolStatus);
 	        this.python = this.convertValues(source["python"], ToolStatus);
 	        this.server = this.convertValues(source["server"], ToolStatus);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace scriptparams {
+
+	export class Parameter {
+	    name: string;
+	    label: string;
+	    description?: string;
+	    placeholder?: string;
+	    type: string;
+	    required: boolean;
+	    default?: any;
+	    hasDefault: boolean;
+	    options?: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new Parameter(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.label = source["label"];
+	        this.description = source["description"];
+	        this.placeholder = source["placeholder"];
+	        this.type = source["type"];
+	        this.required = source["required"];
+	        this.default = source["default"];
+	        this.hasDefault = source["hasDefault"];
+	        this.options = source["options"];
+	    }
+	}
+	export class Metadata {
+	    name?: string;
+	    description?: string;
+	    parameters: Parameter[];
+
+	    static createFrom(source: any = {}) {
+	        return new Metadata(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.parameters = this.convertValues(source["parameters"], Parameter);
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -712,6 +980,7 @@ export namespace settings {
 	    autoCheckFridaUpdates: boolean;
 	    autoUpdateFrida: boolean;
 	    notifyWhenUpdateAvailable: boolean;
+	    autoPreflightBeforeInject: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -723,6 +992,7 @@ export namespace settings {
 	        this.autoCheckFridaUpdates = source["autoCheckFridaUpdates"];
 	        this.autoUpdateFrida = source["autoUpdateFrida"];
 	        this.notifyWhenUpdateAvailable = source["notifyWhenUpdateAvailable"];
+	        this.autoPreflightBeforeInject = source["autoPreflightBeforeInject"];
 	    }
 	}
 
